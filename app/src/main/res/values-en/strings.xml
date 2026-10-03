@@ -336,4 +336,11 @@
     <string name="logs_subtitle">Tunnel log with per-subsystem filters</string>
     <string name="settings_subtitle">Theme, accent, autostart, configuration export</string>
     <string name="about_subtitle">Root-free capabilities, limitations, licences</string>
+    <string name="autopilot_title">Strategy auto-tune</string>
+    <string name="autopilot_hint">Probes candidates on the live tunnel: a real TLS ClientHello is sent through our own stack, and the strategy that gets a ServerHello back wins. Passive mode is tested first.</string>
+    <string name="autopilot_start">Tune now</string>
+    <string name="autopilot_running">Probing…</string>
+    <string name="autopilot_done">Selected strategy: %1$s</string>
+    <string name="autopilot_fail">No strategy got a server response. Make sure the tunnel is up and the network works.</string>
+    <string name="autopilot_need_vpn">Turn the tunnel on to use auto-tune</string>
 </resources>

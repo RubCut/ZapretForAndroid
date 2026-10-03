@@ -28,6 +28,9 @@ import dev.rubcut.zapret.data.ThemeMode
 import dev.rubcut.zapret.data.Presets
 import dev.rubcut.zapret.data.ProfileId
 import dev.rubcut.zapret.data.StrategyRule
+import dev.rubcut.zapret.core.dns.DnsResult
+import dev.rubcut.zapret.core.dns.DnsType
+import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.vpn.VpnController
 import dev.rubcut.zapret.vpn.VpnState
 import dev.rubcut.zapret.vpn.ZapretVpnService
@@ -51,6 +54,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val logs: StateFlow<List<LogEntry>> = LogManager.entries
 
     val snackbar = MutableStateFlow<String?>(null)
+
+    /** Автоподбор стратегий: состояние и результат для экрана «Стратегия». */
+    val autopilotRunning = MutableStateFlow(false)
+    val autopilotResult = MutableStateFlow<String?>(null)
 
     /* ------------------------------ конфигурация ------------------------------ */
 
@@ -238,6 +245,59 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearRecent() = ConnectionLog.clear()
 
     fun clearLogs() = LogManager.clear()
+
+    /**
+     * Автоподбор стратегии обхода. Кандидаты прогоняются через живой стек
+     * туннеля настоящим TLS ClientHello; побеждает тот, на которого сервер
+     * ответил ServerHello. Пассивный режим проверяется первым: если DPI не
+     * блокирует без обработки, обрабатывать нечего.
+     */
+    fun runAutopilot() {
+        if (autopilotRunning.value) return
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val svc = ZapretVpnService.instance
+            val stack = svc?.probeStack
+            if (stack == null) {
+                autopilotResult.value = app.getString(R.string.autopilot_need_vpn)
+                return@launch
+            }
+            autopilotRunning.value = true
+            autopilotResult.value = null
+            try {
+                val hosts = when (config.value.profile) {
+                    ProfileId.YOUTUBE -> listOf("www.youtube.com", "youtubei.googleapis.com")
+                    ProfileId.DISCORD -> listOf("discord.com", "gateway.discord.gg")
+                    ProfileId.COMBINED -> listOf("www.youtube.com", "discord.com")
+                    ProfileId.MAX -> listOf("www.youtube.com", "www.google.com", "discord.com")
+                    else -> listOf("www.google.com")
+                }
+                val resolver = svc.probeResolver
+                val result = StrategyAutopilot(stack).tune(hosts) { host ->
+                    val r = resolver?.lookup(host, DnsType.A)
+                    (r as? DnsResult.Addresses)?.list?.firstOrNull()
+                }
+                if (result == null) {
+                    autopilotResult.value = app.getString(R.string.autopilot_fail)
+                } else {
+                    update {
+                        it.copy(
+                            desync = result.strategy.desync,
+                            splitPositions = result.strategy.splitPositions,
+                            splitDelayMs = result.strategy.splitDelayMs,
+                            tlsrecParts = result.strategy.tlsrecParts
+                        )
+                    }
+                    autopilotResult.value = app.getString(R.string.autopilot_done, result.name)
+                }
+            } catch (e: Exception) {
+                LogManager.w("Автоподбор не завершился: ${e.message}")
+                autopilotResult.value = app.getString(R.string.autopilot_fail)
+            } finally {
+                autopilotRunning.value = false
+            }
+        }
+    }
 
     fun notify(message: String) {
         snackbar.value = message

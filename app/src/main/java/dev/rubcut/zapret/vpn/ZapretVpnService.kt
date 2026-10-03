@@ -707,6 +707,12 @@ class ZapretVpnService : VpnService() {
         stopSelf()
     }
 
+    /** Живой стек туннеля — для автоподбора стратегий из UI. */
+    val probeStack: TcpStack? get() = if (running) tcpStack else null
+
+    /** Живой DNS-резолвер туннеля — автоподбору нужно разрешать имена probing-хостов. */
+    val probeResolver: dev.rubcut.zapret.core.dns.DnsResolver? get() = dnsHandler?.resolver
+
     private fun teardown() {
         unwatchUnderlyingNetwork()
         configJob?.cancel(); configJob = null

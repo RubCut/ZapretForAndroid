@@ -37,6 +37,13 @@ class PacketWriter(private val out: OutputStream) {
     private val lock = Any()
     private val dropped = AtomicInteger()
 
+    /**
+     * Наблюдатель исходящих пакетов. Нужен автоподбору стратегий: он подаёт в
+     * стек синтетического клиента и читает ответы стека, не трогая tun.
+     */
+    @Volatile
+    var tap: ((ByteArray) -> Unit)? = null
+
     val droppedCount: Int get() = dropped.get()
 
     fun write(packet: ByteArray) {
@@ -46,6 +53,10 @@ class PacketWriter(private val out: OutputStream) {
             } catch (e: Exception) {
                 dropped.incrementAndGet()
             }
+        }
+        try {
+            tap?.invoke(packet)
+        } catch (_: Exception) {
         }
     }
 }
@@ -86,6 +97,21 @@ class TcpStack(
     private val connections = ConcurrentHashMap<TcpKey, TcpConnection>()
 
     val activeCount: Int get() = connections.size
+
+    /** Писатель пакетов — автоподбор навешивает на него наблюдателя для зонда. */
+    val packetWriter: PacketWriter get() = writer
+
+    /**
+     * Стратегия, принудительно применяемая ко всем новым соединениям.
+     * Используется автоподбором: на время прогона зонда правила конфигурации
+     * игнорируются, чтобы проверялся именно кандидат.
+     */
+    @Volatile
+    var forcedStrategy: dev.rubcut.zapret.data.Strategy? = null
+
+    fun resolveFor(port: Int, host: String?, ip: InetAddress?): StrategyResolver.Decision =
+        forcedStrategy?.let { StrategyResolver.Decision(it, null, "автоподбор") }
+            ?: resolver.resolveTcp(port, host, ip)
 
     /** Сколько соединений уже продиагностировано в журнал обычным уровнем. */
     private val diagCounter = AtomicInteger()

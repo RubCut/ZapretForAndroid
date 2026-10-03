@@ -355,4 +355,11 @@
     <string name="logs_subtitle">Журнал работы туннеля с фильтрами по подсистемам</string>
     <string name="settings_subtitle">Тема, акцент, автозапуск, экспорт конфигурации</string>
     <string name="about_subtitle">Возможности без root, ограничения, лицензии</string>
+    <string name="autopilot_title">Автоподбор стратегии</string>
+    <string name="autopilot_hint">Проверяет кандидатов на живом туннеле: через собственный стек отправляется настоящий TLS ClientHello, и побеждает стратегия, на которую сервер ответил ServerHello. Пассивный режим проверяется первым.</string>
+    <string name="autopilot_start">Подобрать</string>
+    <string name="autopilot_running">Проверяю кандидатов…</string>
+    <string name="autopilot_done">Выбрана стратегия: %1$s</string>
+    <string name="autopilot_fail">Ни одна стратегия не получила ответа сервера. Убедитесь, что туннель поднят и сеть работает.</string>
+    <string name="autopilot_need_vpn">Для автоподбора включите туннель</string>
 </resources>

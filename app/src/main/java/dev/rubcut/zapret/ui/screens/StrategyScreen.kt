@@ -147,6 +147,30 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
             }
 
             item {
+                val apRunning by vm.autopilotRunning.collectAsStateWithLifecycle()
+                val apResult by vm.autopilotResult.collectAsStateWithLifecycle()
+                SectionCard(title = stringResource(R.string.autopilot_title), icon = Icons.Rounded.Speed) {
+                    Text(
+                        stringResource(R.string.autopilot_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { vm.runAutopilot() },
+                        enabled = !apRunning,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (apRunning) stringResource(R.string.autopilot_running) else stringResource(R.string.autopilot_start))
+                    }
+                    if (apResult != null) {
+                        Spacer(Modifier.height(8.dp))
+                        InfoBanner(apResult!!)
+                    }
+                }
+            }
+
+            item {
                 SectionCard(
                     title = stringResource(R.string.strategy_group_desync),
                     icon = Icons.Rounded.Speed,

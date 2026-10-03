@@ -474,6 +474,38 @@ class ZapretVpnService : VpnService() {
                 LogManager.i(LogTag.DNS, "Самопроверка · адрес сервера $host: ${resolver.diagBootstrap(host)}")
             }
             LogManager.i(LogTag.DNS, "Самопроверка · lookup www.google.com: ${resolver.diagLookup("www.google.com")}")
+
+            // Живая проверка прохождения трафика: настоящий TLS-handshake через
+            // наш стек с текущей стратегией. Третий хост намеренно ВНЕ списка —
+            // по нему видно, не ломаем ли мы то, что трогать не должны.
+            val stack = tcpStack
+            if (stack != null) {
+                val probeTargets = listOf("www.google.com", "www.youtube.com", "example.com")
+                val autopilot = StrategyAutopilot(stack)
+                for (host in probeTargets) {
+                    if (!running) return@launch
+                    val addr = try {
+                        (resolver.lookup(host, DnsType.A) as? DnsResult.Addresses)?.list?.firstOrNull()
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (addr == null) {
+                        LogManager.w("Проверка связи: $host — имя не разрешилось, соединение не проверялось")
+                        continue
+                    }
+                    val ok = try {
+                        autopilot.probe(addr, 443, host, cfg.toStrategy(), 9000)
+                    } catch (e: Exception) {
+                        LogManager.w("Проверка связи: $host — сбой зонда: ${e.message}")
+                        false
+                    }
+                    if (ok) {
+                        LogManager.i(LogTag.VPN, "Проверка связи: $host (${addr.hostAddress}) — TLS ServerHello получен, трафик проходит")
+                    } else {
+                        LogManager.w("Проверка связи: $host (${addr.hostAddress}) — ответа сервера НЕТ (стратегия: ${cfg.desync}, pos=${cfg.splitPositions})")
+                    }
+                }
+            }
         }
     }
 

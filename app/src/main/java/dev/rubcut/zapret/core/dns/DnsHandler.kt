@@ -122,7 +122,7 @@ class DnsHandler(
         // Если приложение спросило наш же виртуальный DNS-сервер, пересылать
         // запрос «туда же» нельзя — это петля. Тогда идём в системные/свои.
         fun forward(verbatim: Boolean): ByteArray? =
-            if (virtualServers.contains(requestedServer)) {
+            if (virtualServers.contains(requestedServer.hostAddress)) {
                 resolver.forwardQueryBytes(payload, payload.size)
             } else if (verbatim) {
                 resolver.forwardRaw(payload, payload.size, requestedServer, 53)

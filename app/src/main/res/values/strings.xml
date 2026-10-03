@@ -350,4 +350,9 @@
     <string name="tile_error">Ошибка</string>
     <string name="tile_subtitle">Обход блокировок DPI</string>
     <string name="tile_subtitle_profile">Профиль: %1$s</string>
+    <string name="more_tuning_hint">Всё, что влияет на то, как туннель обрабатывает трафик</string>
+    <string name="more_app_group">Приложение</string>
+    <string name="logs_subtitle">Журнал работы туннеля с фильтрами по подсистемам</string>
+    <string name="settings_subtitle">Тема, акцент, автозапуск, экспорт конфигурации</string>
+    <string name="about_subtitle">Возможности без root, ограничения, лицензии</string>
 </resources>

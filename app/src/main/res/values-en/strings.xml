@@ -331,4 +331,9 @@
     <string name="tile_error">Error</string>
     <string name="tile_subtitle">DPI bypass</string>
     <string name="tile_subtitle_profile">Profile: %1$s</string>
+    <string name="more_tuning_hint">Everything that affects how the tunnel handles traffic</string>
+    <string name="more_app_group">Application</string>
+    <string name="logs_subtitle">Tunnel log with per-subsystem filters</string>
+    <string name="settings_subtitle">Theme, accent, autostart, configuration export</string>
+    <string name="about_subtitle">Root-free capabilities, limitations, licences</string>
 </resources>

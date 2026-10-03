@@ -14,6 +14,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Article
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -30,18 +31,22 @@ import androidx.navigation.NavHostController
 import dev.rubcut.zapret.R
 import dev.rubcut.zapret.ui.Routes
 import dev.rubcut.zapret.ui.components.ClickableRow
+import dev.rubcut.zapret.ui.components.InfoBanner
 import dev.rubcut.zapret.ui.components.SectionCard
 
 private data class HubEntry(val route: String, val titleRes: Int, val subtitleRes: Int, val icon: ImageVector)
 
-private val hubEntries = listOf(
+private val tuningEntries = listOf(
     HubEntry(Routes.LISTS, R.string.lists_title, R.string.lists_subtitle, Icons.Rounded.ListAlt),
     HubEntry(Routes.DNS, R.string.dns_title, R.string.dns_subtitle, Icons.Rounded.Dns),
     HubEntry(Routes.NETWORK, R.string.net_title, R.string.net_subtitle, Icons.Rounded.Lan),
-    HubEntry(Routes.ARGS, R.string.args_title, R.string.args_subtitle, Icons.Rounded.Terminal),
-    HubEntry(Routes.LOGS, R.string.logs_title, R.string.logs_title, Icons.Rounded.Article),
-    HubEntry(Routes.SETTINGS, R.string.settings_title, R.string.settings_title, Icons.Rounded.Settings),
-    HubEntry(Routes.ABOUT, R.string.about_title, R.string.about_matrix, Icons.Rounded.Info)
+    HubEntry(Routes.ARGS, R.string.args_title, R.string.args_subtitle, Icons.Rounded.Terminal)
+)
+
+private val appEntries = listOf(
+    HubEntry(Routes.LOGS, R.string.logs_title, R.string.logs_subtitle, Icons.Rounded.Article),
+    HubEntry(Routes.SETTINGS, R.string.settings_title, R.string.settings_subtitle, Icons.Rounded.Settings),
+    HubEntry(Routes.ABOUT, R.string.about_title, R.string.about_subtitle, Icons.Rounded.Info)
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,10 +70,10 @@ fun MoreScreen(navController: NavHostController) {
             item {
                 SectionCard(
                     title = stringResource(R.string.nav_tuning),
-                    subtitle = stringResource(R.string.strategy_subtitle),
+                    subtitle = stringResource(R.string.more_tuning_hint),
                     icon = Icons.Rounded.Tune
                 ) {
-                    hubEntries.forEach { entry ->
+                    tuningEntries.forEach { entry ->
                         ClickableRow(
                             title = stringResource(entry.titleRes),
                             subtitle = stringResource(entry.subtitleRes),
@@ -77,6 +82,27 @@ fun MoreScreen(navController: NavHostController) {
                         )
                     }
                 }
+            }
+            item {
+                SectionCard(
+                    title = stringResource(R.string.more_app_group),
+                    icon = Icons.Rounded.Settings
+                ) {
+                    appEntries.forEach { entry ->
+                        ClickableRow(
+                            title = stringResource(entry.titleRes),
+                            subtitle = stringResource(entry.subtitleRes),
+                            icon = entry.icon,
+                            onClick = { navController.navigate(entry.route) }
+                        )
+                    }
+                }
+            }
+            item {
+                InfoBanner(
+                    text = stringResource(R.string.settings_tile_hint),
+                    icon = Icons.Rounded.Bolt
+                )
             }
             item {
                 Text(

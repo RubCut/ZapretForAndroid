@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedInputStream
+import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -22,6 +23,9 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SNIHostName
+import javax.net.ssl.SNIServerName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -51,6 +55,8 @@ class DnsResolver(
     private val cache = object : LinkedHashMap<String, CacheEntry>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CacheEntry>?): Boolean = size > 2048
     }
+
+    private val bootstrapCache = HashMap<String, Pair<InetAddress, Long>>()
 
     @Volatile
     private var dohChannel: DohChannel? = null
@@ -101,7 +107,7 @@ class DnsResolver(
     }
 
     private fun resolveUpstream(cfg: AppConfig, name: String, type: Int): DnsResult {
-        return try {
+        val primary = try {
             when (cfg.dnsMode) {
                 DnsMode.SYSTEM -> viaUdp(cfg, name, type, systemServers(), "system")
                 DnsMode.CUSTOM -> viaUdp(cfg, name, type, configuredServers(cfg), "custom")
@@ -110,16 +116,69 @@ class DnsResolver(
             }
         } catch (e: Exception) {
             LogManager.e("DNS: сбой ${cfg.dnsMode} для $name", e)
-            // Резервный путь — системные серверы, чтобы туннель не «ослеп».
-            if (cfg.dnsMode != DnsMode.SYSTEM) {
-                try {
-                    return viaUdp(cfg, name, type, systemServers(), "fallback")
-                } catch (e2: Exception) {
-                    return DnsResult.Failed(e2.message ?: "unknown")
-                }
-            }
             DnsResult.Failed(e.message ?: "unknown")
         }
+        // DnsResult.Blocked (NXDOMAIN/блок-лист) — это ответ, а не авария:
+        // откатываться на другой сервер здесь нельзя, иначе блок-лист не сработает.
+        if (primary !is DnsResult.Failed) return primary
+        if (cfg.dnsMode == DnsMode.SYSTEM) return primary
+
+        // Запасной путь. Без него любая авария DoH/DoT выглядела бы для
+        // пользователя как «интернет не работает вовсе».
+        val backup = systemServers() + FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
+        return try {
+            val r = viaUdp(cfg, name, type, backup, "fallback")
+            if (r is DnsResult.Failed) {
+                LogManager.w("DNS: $name не разрешилось ни через ${cfg.dnsMode}, ни через резерв (${r.reason})")
+            }
+            r
+        } catch (e2: Exception) {
+            DnsResult.Failed(e2.message ?: "unknown")
+        }
+    }
+
+    /* ---------------------------------------------------------------- */
+    /*  Bootstrap-резолвер для DoH/DoT                                   */
+    /* ---------------------------------------------------------------- */
+
+    /**
+     * Разрешает имя DoH/DoT-сервера, НЕ обращаясь ни к netd, ни к нашему
+     * собственному резолверу.
+     *
+     * Почему это обязательно: `InetSocketAddress("dns.google", 443)` внутри
+     * вызывает `InetAddress.getByName`, а тот идёт через netd в сеть по
+     * умолчанию. Сеть по умолчанию у нас — наш же VPN, поэтому запрос
+     * возвращался в [DnsHandler], тот снова лез в DoH, и всё разрешение имён
+     * зависало намертво (дополнительно канал заблокирован на `@Synchronized`).
+     * Здесь используются только защищённые сокеты и литеральные адреса
+     * серверов — рекурсия невозможна по построению.
+     */
+    fun bootstrapResolve(host: String): InetAddress? {
+        IpLiterals.parse(host)?.let { return it }
+        val key = host.lowercase().trim().trimEnd('.')
+        if (key.isEmpty()) return null
+
+        WELL_KNOWN[key]?.let { IpLiterals.parse(it)?.let { a -> return a } }
+
+        val now = System.currentTimeMillis()
+        synchronized(bootstrapCache) {
+            val hit = bootstrapCache[key]
+            if (hit != null && hit.second > now) return hit.first
+        }
+
+        val cfg = configProvider()
+        val servers = systemServers() + FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
+        val r = viaUdp(cfg, key, DnsType.A, servers, "bootstrap")
+        if (r is DnsResult.Addresses && r.list.isNotEmpty()) {
+            val addr = r.list.first()
+            synchronized(bootstrapCache) {
+                bootstrapCache[key] = addr to (now + BOOTSTRAP_TTL_MS)
+            }
+            LogManager.d(LogTag.DNS, "bootstrap: $key → ${addr.hostAddress}")
+            return addr
+        }
+        LogManager.w("bootstrap: не удалось определить адрес $key (${if (r is DnsResult.Failed) r.reason else "нет A-записи"})")
+        return null
     }
 
     /** Прозрачная пересылка исходного запроса на тот сервер, который выбрало приложение. */
@@ -271,6 +330,27 @@ class DnsResolver(
     }
 
     private companion object {
+        const val BOOTSTRAP_TTL_MS = 10 * 60 * 1000L
+        const val CONNECT_TIMEOUT_MS = 6000
+        const val READ_TIMEOUT_MS = 6000
+
+        /**
+         * Адреса крупнейших публичных DoH/DoT-серверов. Они десятилетиями не
+         * меняются и позволяют поднять защищённый канал вообще без единого
+         * DNS-запроса — важно для первого запуска и для сетей, где DNS уже
+         * сломан. Всё остальное доопределяется через bootstrap-запрос.
+         */
+        val WELL_KNOWN: Map<String, String> = mapOf(
+            "dns.google" to "8.8.8.8",
+            "dns.google.com" to "8.8.8.8",
+            "8.8.8.8" to "8.8.8.8",
+            "one.one.one.one" to "1.1.1.1",
+            "cloudflare-dns.com" to "1.1.1.1",
+            "1.1.1.1" to "1.1.1.1",
+            "dns.quad9.net" to "9.9.9.9",
+            "9.9.9.9" to "9.9.9.9"
+        )
+
         val FALLBACK_SERVERS: List<Pair<InetAddress, Int>> = listOfNotNull(
             IpLiterals.parse("1.1.1.1")?.let { it to 53 },
             IpLiterals.parse("8.8.8.8")?.let { it to 53 }
@@ -329,18 +409,22 @@ class DnsResolver(
         }
 
         private fun connect() {
-            val factory = SSLSocketFactory.getDefault()
-            val s = factory.createSocket() as SSLSocket
+            val addr = bootstrapResolve(host)
+                ?: throw IOException("адрес DoH-сервера $host не определён")
+            val s = SSLSocketFactory.getDefault().createSocket() as SSLSocket
             protector.protect(s)
-            enableHostnameVerification(s, host)
-            s.connect(InetSocketAddress(host, port), 8000)
-            s.soTimeout = 8000
+            // Подключаемся к литеральному адресу: иначе getByName ушёл бы в наш же туннель.
+            s.connect(InetSocketAddress(addr, port), CONNECT_TIMEOUT_MS)
+            s.soTimeout = READ_TIMEOUT_MS
             s.tcpNoDelay = true
+            applySni(s, host)
             s.startHandshake()
+            verifyHost(s, host)
             socket = s
             input = BufferedInputStream(s.inputStream, 8192)
             output = s.outputStream
             keepAlive = true
+            LogManager.d(LogTag.DNS, "DoH: канал к $host (${addr.hostAddress}) установлен")
         }
 
         private fun doQuery(name: String, type: String): List<String>? {
@@ -456,16 +540,20 @@ class DnsResolver(
         }
 
         private fun connect() {
+            val addr = bootstrapResolve(host)
+                ?: throw IOException("адрес DoT-сервера $host не определён")
             val s = SSLSocketFactory.getDefault().createSocket() as SSLSocket
             protector.protect(s)
-            enableHostnameVerification(s, host)
-            s.connect(InetSocketAddress(host, port), 8000)
-            s.soTimeout = 6000
+            s.connect(InetSocketAddress(addr, port), CONNECT_TIMEOUT_MS)
+            s.soTimeout = READ_TIMEOUT_MS
             s.tcpNoDelay = true
+            applySni(s, host)
             s.startHandshake()
+            verifyHost(s, host)
             socket = s
             input = BufferedInputStream(s.inputStream, 4096)
             output = s.outputStream
+            LogManager.d(LogTag.DNS, "DoT: канал к $host (${addr.hostAddress}) установлен")
         }
 
         private fun doQuery(name: String, type: Int): List<InetAddress>? {
@@ -502,13 +590,30 @@ class DnsResolver(
     /*  Общие вспомогательные функции                                    */
     /* ---------------------------------------------------------------- */
 
-    private fun enableHostnameVerification(socket: SSLSocket, host: String) {
+    /**
+     * SNI выставляется вручную. Сокет подключён к IP-адресу, поэтому сам он
+     * имени сервера не знает, а без SNI Google/Cloudflare отдают сертификат не
+     * того виртуального хоста и соединение рвётся.
+     */
+    private fun applySni(socket: SSLSocket, host: String) {
         try {
             val params = socket.sslParameters
-            params.endpointIdentificationAlgorithm = "HTTPS"
+            params.serverNames = listOf<SNIServerName>(SNIHostName(host))
+            // Штатную проверку имени НЕ включаем: она сверяется с peerHost, а там
+            // у нас IP — рукопожатие падало бы даже с совершенно правильным
+            // сертификатом. Проверяем сами в [verifyHost] после рукопожатия.
+            params.endpointIdentificationAlgorithm = null
             socket.sslParameters = params
         } catch (e: Exception) {
-            LogManager.d(LogTag.DNS, "Не удалось включить проверку сертификата для $host")
+            LogManager.d(LogTag.DNS, "SNI для $host не выставлен: ${e.message}")
+        }
+    }
+
+    /** Проверка имени хоста по сертификату после рукопожатия. */
+    private fun verifyHost(socket: SSLSocket, host: String) {
+        val verifier = HttpsURLConnection.getDefaultHostnameVerifier()
+        if (!verifier.verify(host, socket.session)) {
+            throw IOException("сертификат $host не прошёл проверку имени")
         }
     }
 

@@ -13,6 +13,9 @@ import dev.rubcut.zapret.data.HostListStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Перехват DNS внутри туннеля.
@@ -38,6 +41,8 @@ class DnsHandler(
         protector = protector
     )
 
+    private val inFlight = AtomicInteger()
+
     /** Возвращает true, если пакет обработан как DNS и дальше его передавать не нужно. */
     fun handle(ip: IpHeader, dgram: UdpDatagram): Boolean {
         val cfg = configProvider()
@@ -50,54 +55,92 @@ class DnsHandler(
         val query = DnsMessage.parseQuery(payload, payload.size) ?: return false
 
         val v6 = ip.v6
-        val srcAddr = ip.src
         val dstAddr = ip.dst
+        val srcAddr = ip.src
         val srcPort = dgram.srcPort
 
-        scope.launch(io) {
-            TrafficStats.dnsQueried()
-            var response: ByteArray? = null
-
-            if (!cfg.dnsFakeProtection) {
-                // Прозрачный режим: пересылаем запрос ровно туда, куда просило приложение.
-                response = resolver.forwardRaw(payload, payload.size, dstAddr, 53)
-            }
-
-            if (response == null) {
-                response = if (query.isAddressQuery) {
-                    when (val result = resolver.lookup(query.name, query.type)) {
-                        is DnsResult.Addresses -> DnsMessage.buildAddressResponse(query, result.list, result.ttl)
-                        is DnsResult.Blocked -> {
-                            LogManager.d(LogTag.DNS, "DNS: ${query.name} заблокировано")
-                            DnsMessage.buildEmptyResponse(query, 3)
-                        }
-                        is DnsResult.Failed -> {
-                            LogManager.d(LogTag.DNS, "DNS: ${query.name} — ${result.reason}")
-                            DnsMessage.buildEmptyResponse(query, 2)
-                        }
-                    }
-                } else {
-                    resolver.forwardQueryBytes(payload, payload.size)
-                        ?: DnsMessage.buildEmptyResponse(query, 2)
-                }
-            }
-
+        fun send(response: ByteArray) {
             try {
-                val packet = PacketBuilder.udp(
-                    v6 = v6, src = dstAddr, dst = srcAddr,
-                    srcPort = 53, dstPort = srcPort,
-                    payload = response
+                writer.write(
+                    PacketBuilder.udp(
+                        v6 = v6, src = dstAddr, dst = srcAddr,
+                        srcPort = 53, dstPort = srcPort,
+                        payload = response
+                    )
                 )
-                writer.write(packet)
-                LogManager.d(LogTag.DNS, "DNS ← ${query.name} (${response.size} байт)")
             } catch (e: Exception) {
                 LogManager.d(LogTag.DNS, "DNS: не удалось отправить ответ: ${e.message}")
+            }
+        }
+
+        // Ограничитель очереди. Без него любая авария резолвера превращалась в
+        // лавину висящих корутин: приложения не получали ни ответа, ни ошибки.
+        if (inFlight.incrementAndGet() > MAX_IN_FLIGHT) {
+            inFlight.decrementAndGet()
+            LogManager.w("DNS: очередь переполнена (${MAX_IN_FLIGHT}), ${query.name} → SERVFAIL")
+            send(DnsMessage.buildEmptyResponse(query, RCODE_SERVFAIL))
+            return true
+        }
+
+        scope.launch(io) {
+            try {
+                TrafficStats.dnsQueried()
+                val response = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) { resolve(cfg, query, payload, dstAddr) }
+                if (response == null) {
+                    LogManager.w("DNS: ${query.name} — нет ответа за ${RESOLVE_TIMEOUT_MS} мс")
+                    send(DnsMessage.buildEmptyResponse(query, RCODE_SERVFAIL))
+                } else {
+                    send(response)
+                    LogManager.d(LogTag.DNS, "DNS ← ${query.name} (${response.size} байт)")
+                }
+            } catch (e: Exception) {
+                LogManager.w("DNS: сбой обработки ${query.name}: ${e.message}")
+                runCatching { send(DnsMessage.buildEmptyResponse(query, RCODE_SERVFAIL)) }
+            } finally {
+                inFlight.decrementAndGet()
             }
         }
         return true
     }
 
+    private suspend fun resolve(
+        cfg: AppConfig,
+        query: DnsQuery,
+        payload: ByteArray,
+        requestedServer: InetAddress
+    ): ByteArray {
+        if (!cfg.dnsFakeProtection) {
+            // Прозрачный режим: пересылаем запрос ровно туда, куда просило приложение.
+            resolver.forwardRaw(payload, payload.size, requestedServer, 53)?.let { return it }
+        }
+
+        return if (query.isAddressQuery) {
+            when (val result = resolver.lookup(query.name, query.type)) {
+                is DnsResult.Addresses -> DnsMessage.buildAddressResponse(query, result.list, result.ttl)
+                is DnsResult.Blocked -> {
+                    LogManager.d(LogTag.DNS, "DNS: ${query.name} заблокировано")
+                    DnsMessage.buildEmptyResponse(query, RCODE_NXDOMAIN)
+                }
+                is DnsResult.Failed -> {
+                    LogManager.d(LogTag.DNS, "DNS: ${query.name} — ${result.reason}")
+                    DnsMessage.buildEmptyResponse(query, RCODE_SERVFAIL)
+                }
+            }
+        } else {
+            // MX/SRV/PTR/TXT и прочие: пробрасываем запрос как есть.
+            resolver.forwardQueryBytes(payload, payload.size)
+                ?: DnsMessage.buildEmptyResponse(query, RCODE_SERVFAIL)
+        }
+    }
+
     fun close() = resolver.close()
+
+    private companion object {
+        const val MAX_IN_FLIGHT = 96
+        const val RESOLVE_TIMEOUT_MS = 12_000L
+        const val RCODE_SERVFAIL = 2
+        const val RCODE_NXDOMAIN = 3
+    }
 }
 
 /**

@@ -4,8 +4,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -65,6 +68,13 @@ class ZapretVpnService : VpnService() {
         const val CHANNEL_MAIN = "zapret_status"
         const val CHANNEL_EVENTS = "zapret_events"
         const val NOTIFICATION_ID = 0x5A41
+
+        /**
+         * Запас для сотовых сетей, когда настоящий MTU узнать не удалось
+         * (LinkProperties.getMtu() есть только с API 29). У большинства
+         * операторов MTU 1400–1440, и пакеты по 1500 молча теряются.
+         */
+        const val CELLULAR_SAFE_MTU = 1400
 
         const val VPN_ADDR_V4 = "10.211.0.1"
         const val DNS_ADDR_V4 = "10.211.0.2"
@@ -168,7 +178,30 @@ class ZapretVpnService : VpnService() {
         }
     }
 
-    private fun establish(cfg: AppConfig) {
+    /** Ограничение MTU, вычисленное по физической сети при подъёме туннеля. */
+    @Volatile
+    private var mtuCap: Int = Int.MAX_VALUE
+
+    /**
+     * Конфигурация для потоков туннеля: та же, что в репозитории, но с MTU,
+     * приведённым к возможностям физической сети.
+     *
+     * Иначе MSS-кламп считался бы от 1500, а в tun уходили бы пакеты крупнее
+     * реального MTU канала. На мобильных сетях это классическая «чёрная дыра»:
+     * рукопожатие проходит, а данные не идут.
+     */
+    private fun tunnelConfig(): AppConfig {
+        val c = AppGraph.config.current
+        val cap = mtuCap
+        return if (c.mtu > cap) c.copy(mtu = cap) else c
+    }
+
+    private fun establish(requested: AppConfig) {
+        mtuCap = computeMtuCap(requested)
+        val cfg = if (requested.mtu > mtuCap) requested.copy(mtu = mtuCap) else requested
+        if (cfg.mtu != requested.mtu) {
+            LogManager.i(LogTag.VPN, "MTU понижен ${requested.mtu} → ${cfg.mtu} под физическую сеть")
+        }
         val builder = Builder()
             .setSession(getString(R.string.app_name))
             .setConfigureIntent(
@@ -224,7 +257,7 @@ class ZapretVpnService : VpnService() {
             protector = protector,
             scope = s,
             io = Dispatchers.IO,
-            configProvider = { AppGraph.config.current },
+            configProvider = { tunnelConfig() },
             listsProvider = { AppGraph.lists.current },
             virtualServers = setOf(DNS_ADDR_V4, DNS_ADDR_V6)
         )
@@ -233,7 +266,7 @@ class ZapretVpnService : VpnService() {
             writer = writer,
             protector = protector,
             scope = s,
-            configProvider = { AppGraph.config.current },
+            configProvider = { tunnelConfig() },
             listsProvider = { AppGraph.lists.current }
         )
         tcp.dnsRedirect = pickDnsRedirect(cfg)
@@ -241,7 +274,7 @@ class ZapretVpnService : VpnService() {
         val udp = UdpStack(
             writer = writer,
             protector = protector,
-            configProvider = { AppGraph.config.current },
+            configProvider = { tunnelConfig() },
             listsProvider = { AppGraph.lists.current }
         )
 
@@ -263,6 +296,50 @@ class ZapretVpnService : VpnService() {
             LogTag.VPN,
             "Туннель поднят: ${if (hasV4) "IPv4 " else ""}${if (hasV6) "IPv6" else ""} · MTU ${cfg.mtu} · профиль ${profileName(cfg.profile)}"
         )
+    }
+
+    /** MTU, который реально выдержит нижележащая сеть, с запасом для сотовых. */
+    private fun computeMtuCap(cfg: AppConfig): Int {
+        val requested = cfg.mtu.coerceIn(576, 10000)
+        val physical = physicalMtu()
+        val cap = when {
+            physical != null -> minOf(requested, physical)
+            isCellular() -> minOf(requested, CELLULAR_SAFE_MTU)
+            else -> requested
+        }
+        return cap.coerceIn(576, 10000)
+    }
+
+    /** LinkProperties.getMtu() — API 29+; 0 означает «значение по умолчанию». */
+    private fun physicalMtu(): Int? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
+            val networks = cm.allNetworks ?: return null
+            var best: Int? = null
+            for (n in networks) {
+                val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                val mtu = runCatching { cm.getLinkProperties(n)?.mtu ?: 0 }.getOrDefault(0)
+                if (mtu in 576..10000 && (best == null || mtu < best!!)) best = mtu
+            }
+            best
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    private fun isCellular(): Boolean = try {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val networks = cm.allNetworks ?: return false
+        networks.any { n ->
+            val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return@any false
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+        }
+    } catch (e: Throwable) {
+        false
     }
 
     private fun applyAppScope(builder: Builder, cfg: AppConfig) {

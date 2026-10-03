@@ -1,19 +1,22 @@
+<!--
+  Передний план адаптивной иконки.
+  Молния рассечена надвое и половины раздвинуты — визуальная метафора
+  разбиения пакета (split / multisplit), на котором держится весь обход DPI.
+  Все точки лежат внутри круга радиусом 33dp от центра (54;54), поэтому глиф
+  не обрезается ни круглой, ни квадратной, ни «каплевидной» маской лаунчера.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Контур щита -->
+    <!-- Верхняя половина — смещена влево -->
     <path
-        android:pathData="M54,22 L80,31.5 C80,31.5 80.6,54.6 74.4,67.2 C68.6,79 54,86 54,86 C54,86 39.4,79 33.6,67.2 C27.4,54.6 28,31.5 28,31.5 Z"
-        android:fillColor="#00000000"
-        android:strokeColor="#7FE7C4"
-        android:strokeWidth="3.2"
-        android:strokeLineJoin="round" />
-
-    <!-- Молния -->
+        android:pathData="M53.6,27 L39.6,49 L63.68,49 L66.6,45.2 L53.6,45.2 Z"
+        android:fillColor="@color/ic_launcher_glyph" />
+    <!-- Нижняя половина — смещена вправо -->
     <path
-        android:pathData="M58.2,36.5 L44.6,56.4 L52.6,56.4 L49.4,72.5 L63.6,51.6 L55.2,51.6 Z"
-        android:fillColor="#7FE7C4" />
+        android:pathData="M45.1,56.5 L54.8,57.6 L49.6,81 L68.45,56.5 Z"
+        android:fillColor="@color/ic_launcher_glyph" />
 </vector>

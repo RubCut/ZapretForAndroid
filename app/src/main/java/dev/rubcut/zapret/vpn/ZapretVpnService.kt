@@ -156,6 +156,7 @@ class ZapretVpnService : VpnService() {
     }
 
     private fun reportIsolation(bound: Boolean, prot: Boolean) {
+        isolationSummary = "привязка к физической сети=$bound, protect=$prot"
         if (isolationReported) return
         isolationReported = true
         LogManager.i(LogTag.VPN, "Изоляция upstream-сокетов: привязка к физической сети=$bound, protect=$prot")
@@ -172,6 +173,12 @@ class ZapretVpnService : VpnService() {
 
     @Volatile
     private var isolationReported = false
+
+    @Volatile
+    private var isolationSummary = "нет данных"
+
+    @Volatile
+    private var negotiatedMtu = 0
 
     private fun watchUnderlyingNetwork() {
         try {
@@ -347,7 +354,7 @@ class ZapretVpnService : VpnService() {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
             )
-            .setMtu(cfg.mtu.coerceIn(576, 10000))
+            .setMtu(cfg.mtu.coerceIn(576, 10000).also { negotiatedMtu = it })
             .setBlocking(true)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -820,6 +827,19 @@ class ZapretVpnService : VpnService() {
         } catch (_: Exception) {
         }
         stopSelf()
+    }
+
+    /**
+     * Короткая сводка состояния туннеля для отчёта «одной кнопкой»: по ней
+     * видно, доходят ли пакеты до tun, устанавливаются ли соединения и
+     * изолированы ли upstream-сокеты.
+     */
+    fun briefStats(): String {
+        val stack = tcpStack
+        return "прочитано из tun=${readCount.get()}, обработано=${handledCount.get()}, ошибок=${errorCount.get()}; " +
+            "TCP установлено=${stack?.establishedTotal?.get() ?: 0}, упало=${stack?.failedTotal?.get() ?: 0}, " +
+            "активных=${stack?.activeCount ?: 0}; udp-сессий=${udpStack?.activeCount ?: 0}; " +
+            "mtu=$negotiatedMtu; изоляция: $isolationSummary"
     }
 
     /** Живой стек туннеля — для автоподбора стратегий из UI. */

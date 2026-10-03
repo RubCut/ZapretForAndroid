@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.rubcut.zapret.AppGraph
+import dev.rubcut.zapret.BuildConfig
 import dev.rubcut.zapret.R
 import dev.rubcut.zapret.core.ConnectionLog
 import dev.rubcut.zapret.core.LogEntry
@@ -298,6 +299,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 autopilotRunning.value = false
             }
         }
+    }
+
+    /**
+     * Отчёт для поддержки одной кнопкой: конфигурация, состояние туннеля и
+     * последние записи журнала обычным текстом. Его можно вставить в чат —
+     * в отличие от скриншота он не теряет ни строки.
+     */
+    fun diagnosticsReport(): String {
+        val cfg = config.value
+        val svc = ZapretVpnService.instance
+        val sb = StringBuilder()
+        sb.appendLine("Zapret ${BuildConfig.GIT_SHA} · Android ${Build.VERSION.SDK_INT} · ${Build.MANUFACTURER} ${Build.MODEL}")
+        sb.appendLine("туннель: ${vpnState.value}")
+        sb.appendLine(
+            "профиль=${cfg.profile} · desync=${cfg.desync} · pos=${cfg.splitPositions} · " +
+                "tlsrec=${cfg.tlsrecParts} · задержка=${cfg.splitDelayMs}мс"
+        )
+        sb.appendLine("dns=${cfg.dnsMode} · перехват=${cfg.dnsHijack} · серверы=${cfg.dnsServers.replace("\n", ", ")}")
+        sb.appendLine("mtu=${cfg.mtu} · mssClamp=${cfg.mssClamp} · приложения=${cfg.appScope} · udp=${cfg.udpMode}")
+        sb.appendLine("туннель: " + (svc?.briefStats() ?: "сервис не запущен"))
+        sb.appendLine("--- журнал (последние 40) ---")
+        logs.value.takeLast(40).forEach { sb.appendLine("[${it.tag}] ${it.message}") }
+        return sb.toString()
     }
 
     fun notify(message: String) {

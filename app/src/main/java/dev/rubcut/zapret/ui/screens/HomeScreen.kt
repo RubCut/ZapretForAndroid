@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Dns
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.VpnKey
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -55,10 +57,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -181,6 +185,21 @@ fun HomeScreen(
 
             item { StatsGrid(stats, tick) }
 
+            item {
+                val clipboard = LocalClipboardManager.current
+                OutlinedButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(vm.diagnosticsReport()))
+                        vm.notify(context.getString(R.string.report_copied))
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.report_copy))
+                }
+            }
+
             item { ProfileCard(cfg, running) { navController.navigate(Routes.PROFILES) } }
 
             if (recent.isNotEmpty()) {
@@ -275,23 +294,35 @@ private fun PowerCard(running: Boolean, starting: Boolean, onClick: () -> Unit) 
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(contentAlignment = Alignment.Center) {
-                    if (running || starting) {
-                        Box(
-                            modifier = Modifier
-                                .size((196 * pulse).dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.radialGradient(
-                                        listOf(scheme.primary.copy(alpha = 0.30f), Color.Transparent)
-                                    )
+                // Размер контейнера ПОСТОЯННЫЙ. Пульсация ореола и «дыхание»
+                // кнопки делаются в graphicsLayer, то есть только на отрисовке:
+                // раньше ореол менял собственный размер каждый кадр, карточка
+                // пересчитывала высоту и весь список под ней прыгал вниз-вверх.
+                Box(modifier = Modifier.size(196.dp), contentAlignment = Alignment.Center) {
+                    val haloOn = running || starting
+                    Box(
+                        modifier = Modifier
+                            .size(196.dp)
+                            .graphicsLayer {
+                                val s = if (haloOn) pulse else 0f
+                                scaleX = s
+                                scaleY = s
+                                alpha = if (haloOn) 1f else 0f
+                            }
+                            .clip(CircleShape)
+                            .background(
+                                Brush.radialGradient(
+                                    listOf(scheme.primary.copy(alpha = 0.30f), Color.Transparent)
                                 )
-                        )
-                    }
+                            )
+                    )
                     Box(
                         modifier = Modifier
                             .size(148.dp)
-                            .scale(scale)
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                            }
                             .clip(CircleShape)
                             .background(
                                 Brush.linearGradient(

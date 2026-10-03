@@ -343,4 +343,6 @@
     <string name="autopilot_done">Selected strategy: %1$s</string>
     <string name="autopilot_fail">No strategy got a server response. Make sure the tunnel is up and the network works.</string>
     <string name="autopilot_need_vpn">Turn the tunnel on to use auto-tune</string>
+    <string name="report_copy">Copy diagnostics report</string>
+    <string name="report_copied">Report copied — paste it as text into chat or email</string>
 </resources>

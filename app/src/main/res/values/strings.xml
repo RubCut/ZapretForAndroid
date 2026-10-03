@@ -362,4 +362,6 @@
     <string name="autopilot_done">Выбрана стратегия: %1$s</string>
     <string name="autopilot_fail">Ни одна стратегия не получила ответа сервера. Убедитесь, что туннель поднят и сеть работает.</string>
     <string name="autopilot_need_vpn">Для автоподбора включите туннель</string>
+    <string name="report_copy">Скопировать отчёт</string>
+    <string name="report_copied">Отчёт скопирован — его можно вставить текстом в чат или письмо</string>
 </resources>

@@ -67,19 +67,46 @@ jobs:
         id: test
         continue-on-error: true
         run: |
+  gradle_retry() {
+    # $1 — имя лога, остальные — команда gradle.
+    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
+    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
+    local log="$1"; shift
+    local attempt ok=0
+    for attempt in 1 2 3; do
+      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+      pkill -f KotlinCompileDaemon || true
+      pkill -f GradleDaemon || true
+      sleep 5
+    done
+    return $((1 - ok))
+  }
+
           # Демоны Gradle на раннере изредка умирают при старте (error code 0) —
           # это инфраструктурный глюк, поэтому шаг повторяется до трёх раз,
           # если причина падения именно в демоне, а не в тестах.
-          ok=0
-          for attempt in 1 2 3; do
-            if ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain 2>&1 | tee test.log; then
-              ok=1
-              break
-            fi
-            grep -q "daemon has terminated unexpectedly" test.log || break
-            echo "=== попытка $attempt: демон Gradle умер при старте, повторяю ===" | tee -a test.log
-            sleep 5
-          done
+  gradle_retry() {
+    # $1 — имя лога, остальные — команда gradle.
+    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
+    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
+    local log="$1"; shift
+    local attempt ok=0
+    for attempt in 1 2 3; do
+      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+      pkill -f KotlinCompileDaemon || true
+      pkill -f GradleDaemon || true
+      sleep 5
+    done
+    return $((1 - ok))
+  }
+
+          gradle_retry test.log ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain
           # Выжимка результатов в конец лога: аннотации читают хвост, а полный
           # стектрейсJUnit состоит из строк «at …», которые вырезаются как шум.
           if [ -d app/build/test-results/testDebugUnitTest ]; then
@@ -102,37 +129,50 @@ jobs:
         id: release
         continue-on-error: true
         run: |
-          pkill -f KotlinCompileDaemon || true
-          ok=0
-          for attempt in 1 2 3; do
-            if ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease 2>&1 | tee build-release.log; then
-              ok=1
-              break
-            fi
-            grep -q "daemon has terminated unexpectedly" build-release.log || break
-            echo "=== попытка $attempt: демон Gradle/Kotlin умер, повторяю ===" | tee -a build-release.log
-            pkill -f KotlinCompileDaemon || true
-            sleep 5
-          done
-          [ "$ok" -eq 1 ]
+  gradle_retry() {
+    # $1 — имя лога, остальные — команда gradle.
+    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
+    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
+    local log="$1"; shift
+    local attempt ok=0
+    for attempt in 1 2 3; do
+      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+      pkill -f KotlinCompileDaemon || true
+      pkill -f GradleDaemon || true
+      sleep 5
+    done
+    return $((1 - ok))
+  }
+
+          gradle_retry build-release.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease
 
       - name: Build debug APK
         id: debug
         if: steps.release.outcome == 'success'
         continue-on-error: true
         run: |
-          ok=0
-          for attempt in 1 2 3; do
-            if ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug 2>&1 | tee build-debug.log; then
-              ok=1
-              break
-            fi
-            grep -q "daemon has terminated unexpectedly" build-debug.log || break
-            echo "=== попытка $attempt: демон Gradle/Kotlin умер, повторяю ===" | tee -a build-debug.log
-            pkill -f KotlinCompileDaemon || true
-            sleep 5
-          done
-          [ "$ok" -eq 1 ]
+  gradle_retry() {
+    # $1 — имя лога, остальные — команда gradle.
+    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
+    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
+    local log="$1"; shift
+    local attempt ok=0
+    for attempt in 1 2 3; do
+      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+      pkill -f KotlinCompileDaemon || true
+      pkill -f GradleDaemon || true
+      sleep 5
+    done
+    return $((1 - ok))
+  }
+
+          gradle_retry build-debug.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug
 
       # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции
       # дублируются аннотациями checks API — они читаются через api.github.com.

@@ -67,28 +67,28 @@ jobs:
         id: test
         continue-on-error: true
         run: |
-          gradle_retry() {
-            # $1 — имя лога, остальные — команда gradle.
-            # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
-            # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни
-            # BUILD FAILED. Настоящее падение тестов даёт BUILD FAILED и не
-            # повторяется.
-            local log="$1"; shift
-            local attempt ok=0
-            for attempt in 1 2 3; do
-              echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
-              echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
-              pkill -f KotlinCompileDaemon || true
-              pkill -f GradleDaemon || true
-              sleep 5
-            done
-            return $((1 - ok))
+          run_tests() {
+            echo "=== попытка $1 · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee -a test.log
+            set +e
+            ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain >> test.log 2>&1
+            rc=$?
+            set -e
+            echo "GRADLE_RC=$rc" | tee -a test.log
+            return $rc
           }
-          gradle_retry test.log ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain
-          # Выжимка результатов в конец лога: аннотации читают хвост, а полный
-          # стектрейс JUnit состоит из строк «at …», которые вырезаются как шум.
+          : > test.log
+          rc=0
+          for attempt in 1 2 3; do
+            run_tests "$attempt" && { rc=0; break; } || rc=$?
+            # Настоящий вердикт (успех или падение тестов) повторя не требует.
+            grep -qE "BUILD (SUCCESSFUL|FAILED)" test.log && break
+            echo "=== сборщик умер без вердикта (rc=$rc), повторяю ===" | tee -a test.log
+            pkill -f KotlinCompileDaemon || true
+            pkill -f GradleDaemon || true
+            sleep 5
+          done
+          # Выжимка JUnit в конец лога и ОТДЕЛЬНОЙ аннотацией: хвосты логов
+          # нередко обрезаются, а вердикт тестов нужен всегда.
           if [ -d app/build/test-results/testDebugUnitTest ]; then
             python3 - <<'PYEOF' >> test.log
           import glob, xml.etree.ElementTree as ET
@@ -103,8 +103,27 @@ jobs:
                       print("\n".join(txt[:12]))
           PYEOF
           fi
-          grep -E "TESTSUMMARY|TESTFAIL" test.log || true
-
+          python3 - <<'PYEOF'
+          import re, sys
+          lines = []
+          try:
+              raw = open('test.log', encoding='utf-8', errors='replace').read()
+          except OSError:
+              raw = ''
+          for l in raw.splitlines():
+              if 'TESTSUMMARY' in l or 'TESTFAIL' in l or l.startswith('GRADLE_RC=') or 'попытка' in l or 'умер без вердикта' in l:
+                  lines.append(l)
+          body = "\n".join(lines) or 'test.log пуст или вердиктов нет'
+          esc = body.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          rc = 0
+          m = re.search(r'GRADLE_RC=(\d+)[^\d]*$', raw.strip())
+          if m:
+              rc = int(m.group(1))
+          has_fail = 'TESTFAIL' in raw or 'failures=[1-9]' in raw
+          level = 'error' if (rc != 0 or has_fail) else 'notice'
+          print("::%s title=TESTS::%s" % (level, esc))
+          PYEOF
+          exit $rc
       - name: Build release APK (signed, minified)
         id: release
         continue-on-error: true

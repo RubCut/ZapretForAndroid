@@ -1,0 +1,281 @@
+package dev.rubcut.zapret.ui
+
+import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import dev.rubcut.zapret.AppGraph
+import dev.rubcut.zapret.core.ConnectionLog
+import dev.rubcut.zapret.core.LogEntry
+import dev.rubcut.zapret.core.LogManager
+import dev.rubcut.zapret.core.RecentConnection
+import dev.rubcut.zapret.core.SocketProtector
+import dev.rubcut.zapret.core.StatsSnapshot
+import dev.rubcut.zapret.core.TrafficStats
+import dev.rubcut.zapret.core.dns.DnsResolver
+import dev.rubcut.zapret.core.dns.testResolver
+import dev.rubcut.zapret.config.ParseResult
+import dev.rubcut.zapret.config.ZapretArgsParser
+import dev.rubcut.zapret.data.AccentPalette
+import dev.rubcut.zapret.data.AppConfig
+import dev.rubcut.zapret.data.HostListStore
+import dev.rubcut.zapret.data.ThemeMode
+import dev.rubcut.zapret.data.Presets
+import dev.rubcut.zapret.data.ProfileId
+import dev.rubcut.zapret.data.StrategyRule
+import dev.rubcut.zapret.vpn.VpnController
+import dev.rubcut.zapret.vpn.VpnState
+import dev.rubcut.zapret.vpn.ZapretVpnService
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.net.DatagramSocket
+import java.net.Socket
+
+class AppViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val repo = AppGraph.config
+    private val lists = AppGraph.lists
+
+    val config: StateFlow<AppConfig> = repo.config
+    val listSnapshot: StateFlow<HostListStore.Snapshot> = lists.snapshot
+    val vpnState: StateFlow<VpnState> = VpnController.state
+    val vpnError: StateFlow<String?> = VpnController.error
+    val stats: StateFlow<StatsSnapshot> = TrafficStats.snapshot
+    val recent: StateFlow<List<RecentConnection>> = ConnectionLog.entries
+    val logs: StateFlow<List<LogEntry>> = LogManager.entries
+
+    val snackbar = MutableStateFlow<String?>(null)
+
+    /* ------------------------------ конфигурация ------------------------------ */
+
+    fun update(block: (AppConfig) -> AppConfig) {
+        viewModelScope.launch { repo.update(block) }
+    }
+
+    /** Правка стратегии вручную автоматически переводит профиль в «Свой». */
+    fun updateStrategy(block: (AppConfig) -> AppConfig) {
+        viewModelScope.launch {
+            repo.update { current ->
+                val next = block(current)
+                if (next.profile == ProfileId.OFF) next else next.copy(profile = ProfileId.CUSTOM)
+            }
+        }
+    }
+
+    fun setProfile(id: ProfileId) {
+        viewModelScope.launch { repo.update { Presets.apply(id, it) } }
+    }
+
+    fun resetAll() {
+        viewModelScope.launch {
+            repo.reset()
+            lists.resetToBuiltin()
+            ConnectionLog.clear()
+            notify("Настройки и списки сброшены")
+        }
+    }
+
+    /* ------------------------------ оформление ------------------------------ */
+
+    fun setThemeMode(mode: ThemeMode) = update { it.copy(theme = mode) }
+
+    fun setAccent(accent: AccentPalette) = update { it.copy(accent = accent) }
+
+    fun setDynamicColor(enabled: Boolean) = update { it.copy(dynamicColor = enabled) }
+
+    fun setAutostart(enabled: Boolean) = update { it.copy(autoStart = enabled) }
+
+    fun setNotification(enabled: Boolean) = update { it.copy(notificationEnabled = enabled) }
+
+    fun setVerboseLog(enabled: Boolean) {
+        LogManager.verbose = enabled
+        update { it.copy(verboseLog = enabled) }
+    }
+
+    /* ------------------------------ системные настройки ------------------------------ */
+
+    /** Запрос на отключение оптимизации батареи — иначе Android убивает туннель в фоне. */
+    fun openBatterySettings() {
+        val ctx = getApplication<Application>()
+        val ignoring = runCatching {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                pm?.isIgnoringBatteryOptimizations(ctx.packageName) == true
+        }.getOrDefault(false)
+        if (ignoring) {
+            notify("Оптимизация батареи уже отключена")
+            return
+        }
+        val direct = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:" + ctx.packageName)
+        )
+        if (!launch(direct)) launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+    }
+
+    fun openAlwaysOnSettings() {
+        if (!launch(Intent(Settings.ACTION_VPN_SETTINGS))) openAppSettings()
+    }
+
+    fun openVpnSettings() = openAlwaysOnSettings()
+
+    fun requestNotificationPermission() {
+        val ctx = getApplication<Application>()
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+        if (!launch(intent)) openAppSettings()
+    }
+
+    fun openAppSettings() {
+        val ctx = getApplication<Application>()
+        launch(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName))
+        )
+    }
+
+    private fun launch(intent: Intent): Boolean = runCatching {
+        getApplication<Application>().startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    }.getOrDefault(false)
+
+    /* ------------------------------ данные ------------------------------ */
+
+    fun exportConfig(): String = repo.exportJson()
+
+    fun exportJson(): String = repo.exportJson()
+
+    fun importConfig(json: String) {
+        viewModelScope.launch {
+            val ok = repo.importJson(json)
+            notify(if (ok) "Конфигурация импортирована" else "Не удалось разобрать JSON")
+        }
+    }
+
+    /* ------------------------------ списки ------------------------------ */
+
+    fun saveList(kind: HostListStore.Kind, text: String) {
+        viewModelScope.launch {
+            lists.save(kind, text)
+            notify("Список сохранён")
+        }
+    }
+
+    fun appendToList(kind: HostListStore.Kind, lines: List<String>) {
+        viewModelScope.launch { lists.appendLines(kind, lines) }
+    }
+
+    fun resetLists() {
+        viewModelScope.launch {
+            lists.resetToBuiltin()
+            notify("Списки восстановлены")
+        }
+    }
+
+    /* ------------------------------ правила ------------------------------ */
+
+    fun upsertRule(rule: StrategyRule) {
+        updateStrategy { cfg ->
+            val index = cfg.rules.indexOfFirst { it.id == rule.id }
+            val rules = if (index < 0) cfg.rules + rule else cfg.rules.toMutableList().also { it[index] = rule }
+            cfg.copy(rules = rules)
+        }
+    }
+
+    fun deleteRule(id: String) {
+        updateStrategy { cfg -> cfg.copy(rules = cfg.rules.filterNot { it.id == id }) }
+    }
+
+    fun moveRule(id: String, delta: Int) {
+        updateStrategy { cfg ->
+            val index = cfg.rules.indexOfFirst { it.id == id }
+            val target = index + delta
+            if (index < 0 || target < 0 || target >= cfg.rules.size) return@updateStrategy cfg
+            val rules = cfg.rules.toMutableList()
+            val item = rules.removeAt(index)
+            rules.add(target, item)
+            cfg.copy(rules = rules)
+        }
+    }
+
+    /* ------------------------------ аргументы zapret ------------------------------ */
+
+    fun parseArgs(text: String): ParseResult = ZapretArgsParser.parse(text, repo.current)
+
+    /** Разбирает строку и сразу применяет её к конфигурации. */
+    fun applyArgs(text: String) {
+        applyParsed(parseArgs(text))
+    }
+
+    fun applyParsed(result: ParseResult) {
+        update { result.applyTo(it) }
+        notify("Аргументы применены")
+    }
+
+    fun generatedArgs(): String = ZapretArgsParser.generate(repo.current)
+
+    /* ------------------------------ туннель ------------------------------ */
+
+    fun prepareIntent(context: Context): Intent? = VpnController.prepareIntent(context)
+
+    fun startTunnel(context: Context): Boolean = VpnController.requestStart(context)
+
+    fun stopTunnel(context: Context) = VpnController.stop(context)
+
+    fun toggleTunnel(context: Context): Boolean {
+        if (VpnController.isRunning) {
+            stopTunnel(context)
+            return true
+        }
+        return startTunnel(context)
+    }
+
+    fun clearRecent() = ConnectionLog.clear()
+
+    fun clearLogs() = LogManager.clear()
+
+    fun notify(message: String) {
+        snackbar.value = message
+    }
+
+    /** Короткое подтверждение действия (то же сообщение в snackbar). */
+    fun toast(message: String) {
+        snackbar.value = message
+    }
+
+    fun snackbarShown() {
+        snackbar.value = null
+    }
+
+    /* ------------------------------ проверка DNS ------------------------------ */
+
+    fun testDns(host: String, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val protector: SocketProtector = ZapretVpnService.instance?.protector ?: DirectProtector
+            val resolver = DnsResolver(
+                context = getApplication(),
+                configProvider = { repo.current },
+                listsProvider = { lists.current },
+                protector = protector
+            )
+            val text = try {
+                testResolver(resolver, host)
+            } catch (e: Exception) {
+                e.message ?: e.javaClass.simpleName
+            }
+            resolver.close()
+            onResult(text)
+        }
+    }
+
+    private object DirectProtector : SocketProtector {
+        override fun protect(socket: Socket) = false
+        override fun protect(socket: DatagramSocket) = false
+        override fun protect(fd: Int) = false
+    }
+}

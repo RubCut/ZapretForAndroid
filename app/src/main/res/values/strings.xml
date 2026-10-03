@@ -1,0 +1,353 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zapret</string>
+    <string name="app_full_name">Zapret for Android</string>
+    <string name="tile_label">Zapret</string>
+
+    <!-- Навигация -->
+    <string name="nav_home">Главная</string>
+    <string name="nav_profiles">Профили</string>
+    <string name="nav_tuning">Тонкая настройка</string>
+    <string name="nav_settings">Настройки</string>
+
+    <string name="action_back">Назад</string>
+    <string name="action_save">Сохранить</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="action_delete">Удалить</string>
+    <string name="action_add">Добавить</string>
+    <string name="action_edit">Изменить</string>
+    <string name="action_apply">Применить</string>
+    <string name="action_reset">Сбросить</string>
+    <string name="action_import">Импорт</string>
+    <string name="action_export">Экспорт</string>
+    <string name="action_share">Поделиться</string>
+    <string name="action_clear">Очистить</string>
+    <string name="action_close">Закрыть</string>
+    <string name="action_copy">Копировать</string>
+    <string name="action_ok">ОК</string>
+
+    <!-- Главная -->
+    <string name="home_state_off">Обход выключен</string>
+    <string name="home_state_starting">Запуск…</string>
+    <string name="home_state_on">Обход активен</string>
+    <string name="home_state_error">Ошибка</string>
+    <string name="home_power_start">Включить обход</string>
+    <string name="home_power_stop">Выключить</string>
+    <string name="home_active_profile">Активный профиль</string>
+    <string name="home_stats_connections">Соединения</string>
+    <string name="home_stats_traffic_down">Загружено</string>
+    <string name="home_stats_traffic_up">Отправлено</string>
+    <string name="home_stats_uptime">Время работы</string>
+    <string name="home_stats_desynced">Обработано DPI-движком</string>
+    <string name="home_stats_dns">DNS-запросов</string>
+    <string name="home_recent">Последние соединения</string>
+    <string name="home_recent_empty">Пока нет трафика. Включите обход и откройте YouTube или Discord.</string>
+    <string name="home_checklist">Проверка готовности</string>
+    <string name="home_check_notification">Разрешение на уведомления</string>
+    <string name="home_check_battery">Игнорирование экономии батареи</string>
+    <string name="home_check_alwayson">Always-on VPN (рекомендуется)</string>
+    <string name="home_check_done">Настроено</string>
+    <string name="home_check_todo">Требуется настройка</string>
+    <string name="home_grant_dialog_title">Android запросит разрешение на VPN</string>
+    <string name="home_grant_dialog_text">Zapret работает как локальный VPN-туннель: он перехватывает пакеты приложений и переупаковывает TLS-рукопожатия так, чтобы DPI не смог их распознать. Root-права не требуются, трафик никуда не уходит — всё обрабатывается на устройстве.</string>
+    <string name="home_grant_dialog_confirm">Разрешить</string>
+    <string name="home_no_root_note">Работает без root. Стратегии, требующие подмены TTL и raw-сокетов, недоступны — подробнее в разделе «О приложении».</string>
+
+    <!-- Уведомление -->
+    <string name="notif_channel_main">Состояние обхода</string>
+    <string name="notif_channel_main_desc">Постоянное уведомление о работе туннеля</string>
+    <string name="notif_channel_logs">События и ошибки</string>
+    <string name="notif_title_running">Zapret активен</string>
+    <string name="notif_text_running">Профиль: %1$s · соединений: %2$d</string>
+    <string name="notif_action_stop">Остановить</string>
+    <string name="notif_action_open">Открыть</string>
+
+    <!-- Профили -->
+    <string name="profiles_title">Профили</string>
+    <string name="profiles_subtitle">Готовые наборы стратегий, как .bat-файлы в zapret-discord-youtube</string>
+    <string name="profile_youtube">YouTube</string>
+    <string name="profile_youtube_desc">TLS-разделение ClientHello + блокировка QUIC. Основная связка для видео.</string>
+    <string name="profile_discord">Discord</string>
+    <string name="profile_discord_desc">Разделение рукопожатия для discord.gg и discord.media, релей голосового UDP.</string>
+    <string name="profile_combined">YouTube + Discord</string>
+    <string name="profile_combined_desc">Универсальный набор: оба списка хостов и агрессивное разделение.</string>
+    <string name="profile_max">Максимальный</string>
+    <string name="profile_max_desc">Все доступные без root техники: multisplit + tlsrec + медленный старт окна.</string>
+    <string name="profile_custom">Свой профиль</string>
+    <string name="profile_custom_desc">Ваши собственные параметры, собранные вручную или из строки аргументов.</string>
+    <string name="profile_off">Выключено</string>
+    <string name="profile_off_desc">Туннель не поднимается, трафик идёт напрямую.</string>
+    <string name="profile_active">Активен</string>
+    <string name="profile_applied">Профиль «%1$s» применён</string>
+    <string name="profile_user">Пользовательские</string>
+    <string name="profile_builtin">Встроенные</string>
+
+    <!-- Стратегия -->
+    <string name="strategy_title">Стратегия обхода</string>
+    <string name="strategy_subtitle">Аналог --dpi-desync из zapret, адаптированный под работу без root</string>
+    <string name="strategy_group_desync">Десинхронизация DPI</string>
+    <string name="strategy_desync_mode">Режим десинхронизации</string>
+    <string name="desync_none">Отключено</string>
+    <string name="desync_split">split</string>
+    <string name="desync_multisplit">multisplit</string>
+    <string name="desync_tlsrec">tlsrec</string>
+    <string name="desync_multitlsrec">multisplit + tlsrec</string>
+    <string name="desync_hostfakesplit">hostfakesplit (HTTP)</string>
+    <string name="strategy_desync_hint">Режим определяет, как именно TLS ClientHello разбивается на несколько TCP-сегментов. DPI обычно разбирает только первый сегмент потока, поэтому разбитое рукопожатие он не распознаёт.</string>
+    <string name="strategy_split_pos">Точки разбиения</string>
+    <string name="strategy_split_pos_hint">Аналог --dpi-desync-split-pos. Можно выбрать несколько.</string>
+    <string name="split_pos_1">1 (первый байт)</string>
+    <string name="split_pos_midsni">midsld (середина SNI)</string>
+    <string name="split_pos_sniend">sniend (после SNI)</string>
+    <string name="split_pos_middle">middle (середина пакета)</string>
+    <string name="split_pos_custom">custom (байт, смещение)</string>
+    <string name="strategy_split_custom_pos">Своё смещение, байт</string>
+    <string name="strategy_split_delay">Пауза между сегментами, мс</string>
+    <string name="strategy_split_delay_hint">Небольшая задержка гарантирует, что ядро не склеит сегменты обратно.</string>
+    <string name="strategy_cutoff">Обрабатывать только первые чанки (--dpi-desync-cutoff=n)</string>
+    <string name="strategy_cutoff_hint">Сколько первых блоков данных клиента проходит через движок. Обычно достаточно одного — в нём лежит ClientHello.</string>
+    <string name="strategy_tlsrec_size">Дробить TLS-записи (--dpi-desync-tlsrec)</string>
+    <string name="strategy_tlsrec_hint">Одна запись ClientHello переупаковывается в несколько TLS-записей того же типа. Это легально для TLS, но ломает разбор у DPI.</string>
+    <string name="strategy_wssize">Медленный старт окна (--wssize)</string>
+    <string name="strategy_wssize_hint">Уменьшает advertised window на первых байтах, заставляя сервер дробить ServerHello. 0 — отключено.</string>
+    <string name="strategy_wssize_bytes">Байт с урезанным окном</string>
+    <string name="strategy_wssize_window">Размер окна, байт</string>
+
+    <string name="strategy_group_filter">Фильтры потока</string>
+    <string name="strategy_tcp_ports">TCP-порты (--wf-tcp / --filter-tcp)</string>
+    <string name="strategy_udp_ports">UDP-порты (--wf-udp / --filter-udp)</string>
+    <string name="strategy_ports_hint">Формат zapret: 80,443,2053,50000&#8211;50100. Пусто — все порты.</string>
+    <string name="strategy_hostlist_mode">Режим списка хостов</string>
+    <string name="hostlist_mode_off">Выключен (обрабатывать всё)</string>
+    <string name="hostlist_mode_include">Только из списка (--hostlist)</string>
+    <string name="hostlist_mode_exclude">Все, кроме списка (--hostlist-exclude)</string>
+    <string name="strategy_any_protocol">Обрабатывать неизвестные протоколы (--dpi-desync-any-protocol)</string>
+
+    <string name="strategy_group_udp">UDP и QUIC</string>
+    <string name="strategy_block_quic">Блокировать QUIC (UDP/443)</string>
+    <string name="strategy_block_quic_hint">Браузеры уходят в QUIC, где обход без root невозможен. Блокировка заставляет их вернуться на TCP/443, где работает split. Google Meet и YouTube загружаются чуть медленнее в первые секунды.</string>
+    <string name="strategy_udp_mode">Обработка UDP</string>
+    <string name="udp_mode_relay">Релей (пропускать всё)</string>
+    <string name="udp_mode_block_filtered">Блокировать только фильтруемые порты</string>
+    <string name="udp_mode_block_all">Блокировать весь UDP, кроме DNS</string>
+    <string name="strategy_udp_timeout">Таймаут UDP-сессии, сек</string>
+
+
+    <!-- Списки -->
+    <string name="lists_title">Списки</string>
+    <string name="lists_subtitle">hostlist, ipset и hosts — так же, как в папке lists/ у zapret</string>
+    <string name="lists_tab_hostlist">Хосты</string>
+    <string name="lists_tab_exclude">Исключения</string>
+    <string name="lists_tab_ipset">IP-сети</string>
+    <string name="lists_tab_hosts">hosts</string>
+    <string name="lists_hostlist_title">Список доменов (--hostlist)</string>
+    <string name="lists_hostlist_hint">По одному домену в строке. Запись вида googlevideo.com охватывает и все поддомены. Префикс * — точное совпадение без поддоменов.</string>
+    <string name="lists_exclude_title">Исключения (--hostlist-exclude)</string>
+    <string name="lists_exclude_hint">Эти домены не обрабатываются, даже если попали в основной список.</string>
+    <string name="lists_ipset_title">Список IP-сетей (--ipset)</string>
+    <string name="lists_ipset_hint">CIDR-диапазоны по одному в строке: 173.194.0.0/16 или 2a00:1450::/32. Пусто — не используется.</string>
+    <string name="lists_ipset_exclude_title">Исключения IP (--ipset-exclude)</string>
+    <string name="lists_hosts_title">Переопределение hosts</string>
+    <string name="lists_hosts_hint">Синтаксис файла hosts: «IP домен». Записи применяются внутри туннеля на этапе DNS — приложение получит указанный вами адрес. Полезно, когда провайдер подменяет DNS-ответы.</string>
+    <string name="lists_count">Записей: %1$d</string>
+    <string name="lists_import_done">Импортировано записей: %1$d</string>
+    <string name="lists_saved">Сохранено</string>
+    <string name="lists_editor_title">Редактор списка</string>
+    <string name="lists_paste">Вставить</string>
+    <string name="lists_builtin_google">Встроенный: Google/YouTube</string>
+    <string name="lists_builtin_discord">Встроенный: Discord</string>
+    <string name="lists_builtin_general">Встроенный: общий</string>
+    <string name="lists_load_builtin">Загрузить встроенный список</string>
+    <string name="lists_reset_builtin">Вернуть встроенные списки</string>
+
+    <!-- DNS -->
+    <string name="dns_title">DNS</string>
+    <string name="dns_subtitle">Свои резолверы, DoH/DoT и защита от подмены ответов</string>
+    <string name="dns_mode">Источник ответов</string>
+    <string name="dns_mode_system">Системный DNS текущей сети</string>
+    <string name="dns_mode_custom">Указанные серверы (UDP/TCP)</string>
+    <string name="dns_mode_doh">DNS-over-HTTPS</string>
+    <string name="dns_mode_dot">DNS-over-TLS</string>
+    <string name="dns_servers">Серверы</string>
+    <string name="dns_servers_hint">По одному в строке: 1.1.1.1, 8.8.8.8:5353, [2606:4700:4700::1111]</string>
+    <string name="dns_doh_provider">Провайдер DoH</string>
+    <string name="dns_doh_url">Свой URL DoH</string>
+    <string name="dns_dot_host">Хост DoT</string>
+    <string name="dns_block_ads">Блокировать рекламу и трекинг</string>
+    <string name="dns_block_ads_hint">Встроенный компактный список; отвечает NXDOMAIN. Не замена полноценному блокировщику.</string>
+    <string name="dns_fake_protection">Защита от подмены ответов</string>
+    <string name="dns_fake_protection_hint">Отбрасывает ответы, пришедшие не от настроенного резолвера, и повторяет запрос по защищённому каналу.</string>
+    <string name="dns_cache">Кэшировать ответы</string>
+    <string name="dns_cache_ttl">TTL кэша, сек</string>
+    <string name="dns_hijack">Перехватывать все запросы на порт 53</string>
+    <string name="dns_hijack_hint">Включите, если приложение игнорирует выданный VPN DNS-сервер.</string>
+    <string name="dns_test">Проверить DNS</string>
+    <string name="dns_test_running">Проверяем…</string>
+    <string name="dns_test_ok">OK: %1$s</string>
+    <string name="dns_test_fail">Ошибка: %1$s</string>
+
+    <!-- Сеть -->
+    <string name="net_title">Сеть</string>
+    <string name="net_subtitle">Адреса туннеля, протоколы и область действия</string>
+    <string name="net_ipv4">IPv4</string>
+    <string name="net_ipv6">IPv6</string>
+    <string name="net_ipv6_hint">Требуется, если ваш провайдер даёт IPv6 — иначе часть трафика пойдёт мимо обхода.</string>
+    <string name="net_mtu">MTU туннеля</string>
+    <string name="net_mss">Ограничение MSS</string>
+    <string name="net_apps">Область действия</string>
+    <string name="net_apps_all">Все приложения</string>
+    <string name="net_apps_selected">Выбранные приложения</string>
+    <string name="net_apps_excluded">Все, кроме выбранных</string>
+    <string name="net_apps_pick">Выбрать приложения</string>
+    <string name="net_apps_count">Выбрано: %1$d</string>
+    <string name="net_apps_api_hint">Точечная маршрутизация приложений доступна на Android 10 и новее.</string>
+    <string name="net_tunnel_addresses">Адреса туннеля</string>
+    <string name="net_dns_address">Виртуальный DNS-адрес</string>
+    <string name="net_advanced">Дополнительно</string>
+    <string name="net_conn_timeout">Таймаут подключения, мс</string>
+    <string name="net_tcp_timeout">Таймаут TCP-сессии, сек</string>
+    <string name="net_max_conns">Максимум одновременных соединений</string>
+    <string name="net_buffer">Буфер отправки, КБ</string>
+
+    <!-- Аргументы -->
+    <string name="args_title">Аргументы zapret</string>
+    <string name="args_subtitle">Вставьте строку из .bat / config — она будет разобрана в настройки приложения</string>
+    <string name="args_hint">Например:\n--filter-tcp=443 --hostlist-domains=googlevideo.com --dpi-desync=split --dpi-desync-split-pos=1,midsld --dpi-desync-tlsrec=2 --wssize=6:1</string>
+    <string name="args_parse">Разобрать</string>
+    <string name="args_result">Результат разбора</string>
+    <string name="args_applied">Аргументы применены к конфигурации</string>
+    <string name="args_supported">Поддержано</string>
+    <string name="args_ignored">Проигнорировано (требует root)</string>
+    <string name="args_unknown">Неизвестные параметры</string>
+    <string name="args_generated">Эквивалентная строка для текущего профиля</string>
+    <string name="args_empty">Введите строку аргументов</string>
+
+    <!-- Журнал -->
+    <string name="logs_title">Журнал</string>
+    <string name="logs_filter_all">Все</string>
+    <string name="logs_filter_dpi">DPI</string>
+    <string name="logs_filter_dns">DNS</string>
+    <string name="logs_filter_tcp">TCP</string>
+    <string name="logs_filter_err">Ошибки</string>
+    <string name="logs_empty">Журнал пуст</string>
+    <string name="logs_paused">Пауза</string>
+    <string name="logs_autoscroll">Автопрокрутка</string>
+
+    <!-- Настройки -->
+    <string name="settings_title">Настройки</string>
+    <string name="settings_appearance">Внешний вид</string>
+    <string name="settings_theme">Тема</string>
+    <string name="theme_system">Как в системе</string>
+    <string name="theme_light">Светлая</string>
+    <string name="theme_dark">Тёмная</string>
+    <string name="settings_dynamic_color">Динамические цвета (Material You)</string>
+    <string name="settings_dynamic_color_hint">Палитра из обоев, Android 12+.</string>
+    <string name="settings_color_scheme">Акцентный цвет</string>
+    <string name="settings_behavior">Поведение</string>
+    <string name="settings_autostart">Запускать при включении устройства</string>
+    <string name="settings_autostart_hint">Android может запретить автозапуск — проверьте настройки производителя.</string>
+    <string name="settings_tile">Плитка в шторке</string>
+    <string name="settings_tile_hint">Добавьте плитку «Zapret» в быстрые настройки, чтобы включать обход свайпом.</string>
+    <string name="settings_notification">Уведомление о работе</string>
+    <string name="settings_verbose_log">Подробный журнал</string>
+    <string name="settings_verbose_log_hint">Пишет каждое обработанное соединение. Заметно нагружает устройство.</string>
+    <string name="settings_battery">Отключить экономию батареи</string>
+    <string name="settings_always_on">Always-on VPN</string>
+    <string name="settings_always_on_hint">Открывает системные настройки VPN, где можно закрепить Zapret и запретить трафик в обход.</string>
+    <string name="settings_data">Данные</string>
+    <string name="settings_export_config">Экспортировать конфигурацию</string>
+    <string name="settings_import_config">Импортировать конфигурацию</string>
+    <string name="settings_reset_all">Сбросить всё</string>
+    <string name="settings_reset_confirm">Вернуть все настройки и списки к заводским?</string>
+
+    <!-- О приложении -->
+    <string name="about_title">О приложении</string>
+    <string name="about_version">Версия %1$s (%2$d)</string>
+    <string name="about_what">Что это</string>
+    <string name="about_what_text">Порт идей zapret (bol-van) и сборок zapret-discord-youtube / zapret-discord-youtube-linux на Android без root. Вместо драйвера WinDivert или NFQUEUE используется штатный VpnService: приложение поднимает туннель, ведёт собственный TCP/IP-стек и переупаковывает первые байты TLS-рукопожатия так, чтобы DPI не увидел SNI.</string>
+    <string name="about_matrix">Что доступно без root</string>
+    <string name="about_credits">Благодарности</string>
+    <string name="about_license">Лицензия</string>
+    <string name="about_license_text">GPL-3.0 — как и оригинальный zapret.</string>
+    <string name="about_disclaimer">Дисклеймер</string>
+    <string name="about_disclaimer_text">Приложение предназначено для восстановления доступа к легальному контенту, заблокированному с нарушениями. Авторы не несут ответственности за способ использования. Обход DPI может быть ограничен законодательством вашей страны — проверьте местные нормы.</string>
+
+    <string name="cap_supported">Работает без root</string>
+    <string name="cap_partial">Частично</string>
+    <string name="cap_root">Нужен root</string>
+
+    <!-- Прочее -->
+    <string name="err_vpn_start">Не удалось поднять туннель: %1$s</string>
+    <string name="err_vpn_denied">Разрешение на VPN не получено</string>
+    <string name="err_no_profile">Выберите профиль</string>
+
+    <plurals name="plural_connections">
+        <item quantity="one">%1$d соединение</item>
+        <item quantity="few">%1$d соединения</item>
+        <item quantity="many">%1$d соединений</item>
+        <item quantity="other">%1$d соединений</item>
+    </plurals>
+    <plurals name="plural_entries">
+        <item quantity="one">%1$d запись</item>
+        <item quantity="few">%1$d записи</item>
+        <item quantity="many">%1$d записей</item>
+        <item quantity="other">%1$d записей</item>
+    </plurals>
+    <plurals name="plural_apps">
+        <item quantity="one">%1$d приложение</item>
+        <item quantity="few">%1$d приложения</item>
+        <item quantity="many">%1$d приложений</item>
+        <item quantity="other">%1$d приложений</item>
+    </plurals>
+    <string name="strategy_rules_title">Правила (цепочка --new)</string>
+    <string name="strategy_rules_subtitle">Проверяются сверху вниз, срабатывает первое подходящее — как блоки, разделённые --new в .bat-файлах</string>
+    <string name="strategy_rules_empty">Правил нет — действует общая стратегия выше.</string>
+    <string name="rule_editor_title">Правило</string>
+    <string name="rule_filter_title">Фильтр правила</string>
+    <string name="rule_hosts_title">Область по хостам</string>
+    <string name="rule_name_label">Название</string>
+    <string name="rule_tcp_hint">Пусто — правило не действует на TCP</string>
+    <string name="rule_udp_hint">Пусто — правило не действует на UDP</string>
+    <string name="rule_domains_label">Домены (по одному в строке)</string>
+    <string name="rule_index">Правило %1$d</string>
+    <string name="hostsrc_any">любой хост</string>
+    <string name="hostsrc_hostlist">--hostlist</string>
+    <string name="hostsrc_general">общий список</string>
+    <string name="hostsrc_google">Google/YouTube</string>
+    <string name="hostsrc_discord">Discord</string>
+    <string name="hostsrc_inline">--hostlist-domains</string>
+    <string name="unit_bytes_short">Б</string>
+    <string name="unit_ms_short">мс</string>
+    <string name="unit_packets_short">пак.</string>
+    <string name="unit_sec_short">с</string>
+    <string name="lists_tab_ipset_ex">IP-исключения</string>
+    <string name="dns_mode_system_hint">Ответы приходят от DNS-серверов текущей сети (Wi-Fi или оператора). Если провайдер подменяет ответы — включите защиту ниже или перейдите на DoH.</string>
+    <string name="dns_protection_group">Защита и кэш</string>
+    <string name="unit_kib">КиБ</string>
+    <string name="action_copied">Скопировано</string>
+    <string name="action_search">Поиск</string>
+    <string name="args_apply">Применить</string>
+    <string name="args_errors">Ошибки разбора</string>
+    <string name="args_input">Командная строка zapret</string>
+    <string name="net_group_tunnel">Туннель</string>
+    <string name="net_mtu_hint">Больше MTU — меньше накладных расходов, но некоторые сети рвут крупные пакеты. 1500 — стандарт Ethernet.</string>
+    <string name="net_mss_clamp_hint">Максимальный размер сегмента, который мы объявляем в SYN-ACK. Занижение помогает при «чёрной дыре» MTU.</string>
+    <string name="net_max_connections_hint">Сколько TCP-соединений туннель держит одновременно. При превышении новые отклоняются.</string>
+    <string name="net_app_scope_all_hint">Весь трафик устройства идёт через туннель. Выбирайте режим ниже, чтобы ограничить список.</string>
+    <string name="net_advanced_hint">Меняйте эти значения только если понимаете, зачем: они влияют на стабильность всех соединений.</string>
+    <string name="settings_group_system">Система</string>
+    <string name="settings_battery_hint">Без этого Android может убить туннель в фоне через несколько минут.</string>
+    <string name="settings_notification_permission">Разрешить уведомления</string>
+    <string name="settings_notification_permission_hint">Нужно, чтобы видеть статус туннеля в шторке.</string>
+    <string name="settings_vpn_settings">Системные настройки VPN</string>
+    <string name="settings_share_logs">Отправить журнал</string>
+    <string name="settings_export_hint">Сохранить все настройки и правила в JSON-файл.</string>
+    <string name="settings_import_hint">Загрузить JSON-файл, сохранённый ранее.</string>
+    <string name="settings_accent">Акцентный цвет</string>
+    <string name="settings_accent_hint">Используется, когда динамические цвета Material You выключены или недоступны (Android 11 и ниже).</string>
+    <string name="tile_running">Работает</string>
+    <string name="tile_starting">Запуск…</string>
+    <string name="tile_error">Ошибка</string>
+    <string name="tile_subtitle">Обход блокировок DPI</string>
+    <string name="tile_subtitle_profile">Профиль: %1$s</string>
+</resources>

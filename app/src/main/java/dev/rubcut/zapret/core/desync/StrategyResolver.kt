@@ -79,6 +79,33 @@ class StrategyResolver(
         return Decision(cfg.toStrategy(), null, "общая стратегия профиля")
     }
 
+    /**
+     * Попадает ли имя в область действия обхода: по любому включённому правилу
+     * (порты не проверяются — для DNS-запроса порт ещё неизвестен) либо по
+     * общим фильтрам hostlist.
+     *
+     * Нужно DNS-перехвату: домены ВНЕ области обхода обязаны получать ответ
+     * провайдера без изменений. Иначе получается, что приложение «реагирует»
+     * на весь интернет, а не только на домены из списка.
+     */
+    fun hostInScope(host: String?): Boolean {
+        if (host.isNullOrEmpty()) return false
+        val cfg = configProvider()
+        val lists = listsProvider()
+        if (lists.exclude.matches(host)) return false
+        for (rule in cfg.rules) {
+            if (!rule.enabled) continue
+            if (!hostMatches(rule, host, lists)) continue
+            if (rule.excludeDomains.isNotBlank() && HostMatcher.parse(rule.excludeDomains).matches(host)) continue
+            return true
+        }
+        return when (cfg.hostlistMode) {
+            HostlistMode.OFF -> true
+            HostlistMode.INCLUDE -> lists.hostlist.matches(host)
+            HostlistMode.EXCLUDE -> !lists.hostlist.matches(host)
+        }
+    }
+
     private fun hostMatches(rule: StrategyRule, host: String?, lists: HostListStore.Snapshot): Boolean {
         if (rule.hostSource == HostSource.ANY) return true
         if (host.isNullOrEmpty()) return false

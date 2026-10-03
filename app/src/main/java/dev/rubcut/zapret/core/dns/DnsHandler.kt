@@ -4,6 +4,7 @@ import dev.rubcut.zapret.core.LogManager
 import dev.rubcut.zapret.core.LogTag
 import dev.rubcut.zapret.core.SocketProtector
 import dev.rubcut.zapret.core.TrafficStats
+import dev.rubcut.zapret.core.desync.StrategyResolver
 import dev.rubcut.zapret.core.net.IpHeader
 import dev.rubcut.zapret.core.net.PacketBuilder
 import dev.rubcut.zapret.core.net.UdpDatagram
@@ -30,7 +31,7 @@ class DnsHandler(
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val configProvider: () -> AppConfig,
-    listsProvider: () -> HostListStore.Snapshot,
+    private val listsProvider: () -> HostListStore.Snapshot,
     private val virtualServers: Set<String>
 ) {
 
@@ -41,8 +42,12 @@ class DnsHandler(
         protector = protector
     )
 
+    /** Область действия обхода: домены вне неё DNS не трогает вообще. */
+    private val strategies = StrategyResolver(configProvider, listsProvider)
+
     private val inFlight = AtomicInteger()
     private val successReported = AtomicInteger()
+    private val passthroughReported = AtomicInteger()
 
     /** Возвращает true, если пакет обработан как DNS и дальше его передавать не нужно. */
     fun handle(ip: IpHeader, dgram: UdpDatagram): Boolean {
@@ -114,9 +119,41 @@ class DnsHandler(
         payload: ByteArray,
         requestedServer: InetAddress
     ): ByteArray {
+        // Если приложение спросило наш же виртуальный DNS-сервер, пересылать
+        // запрос «туда же» нельзя — это петля. Тогда идём в системные/свои.
+        fun forward(verbatim: Boolean): ByteArray? =
+            if (virtualServers.contains(requestedServer)) {
+                resolver.forwardQueryBytes(payload, payload.size)
+            } else if (verbatim) {
+                resolver.forwardRaw(payload, payload.size, requestedServer, 53)
+            } else {
+                resolver.forwardQueryBytes(payload, payload.size)
+            }
+
         if (!cfg.dnsFakeProtection) {
             // Прозрачный режим: пересылаем запрос ровно туда, куда просило приложение.
-            resolver.forwardRaw(payload, payload.size, requestedServer, 53)?.let { return it }
+            forward(true)?.let { return it }
+        }
+
+        // Домены ВНЕ списка обхода отдаём нетронутыми: ответ провайдера
+        // возвращается байт в байт. Hosts-таблица и список блокировки при этом
+        // сохраняют силу — это явная воля пользователя, а не обход DPI.
+        val lists = listsProvider()
+        val overridden = lists.hosts.lookup(query.name) != null
+        val adBlocked = cfg.dnsBlockAds && HostListStore.ADS_MATCHER.matches(query.name)
+        if (!overridden && !adBlocked && query.isAddressQuery && !strategies.hostInScope(query.name)) {
+            val raw = forward(true)
+            if (raw != null) {
+                if (passthroughReported.getAndIncrement() < 3) {
+                    LogManager.i(
+                        LogTag.DNS,
+                        "DNS: ${query.name} вне списка обхода — ответ провайдера отдан без изменений"
+                    )
+                }
+                return raw
+            }
+            // Провайдер не ответил — падаем в собственный резолвер, чтобы
+            // домен не оказался «мёртвым» из-за чужого сбоя.
         }
 
         return if (query.isAddressQuery) {

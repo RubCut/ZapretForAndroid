@@ -3,6 +3,7 @@ package dev.rubcut.zapret
 import android.app.Application
 import android.content.Context
 import dev.rubcut.zapret.core.LogManager
+import dev.rubcut.zapret.BuildConfig
 import dev.rubcut.zapret.core.LogTag
 import dev.rubcut.zapret.core.dns.AppContextProvider
 import dev.rubcut.zapret.data.AppConfig
@@ -43,7 +44,7 @@ object AppGraph {
                 LogManager.verbose = cfg.verboseLog
             }
         }
-        LogManager.i(LogTag.APP, "Zapret инициализирован")
+        LogManager.i(LogTag.APP, "Zapret инициализирован · сборка ${BuildConfig.GIT_SHA}")
     }
 }
 

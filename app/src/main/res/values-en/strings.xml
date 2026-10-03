@@ -250,7 +250,7 @@
     <string name="settings_reset_confirm">Restore all settings and lists to factory defaults?</string>
 
     <string name="about_title">About</string>
-    <string name="about_version">Version %1$s (%2$d)</string>
+    <string name="about_version">Version %1$s (%2$d) · build %3$s</string>
     <string name="about_what">What this is</string>
     <string name="about_what_text">A port of the ideas behind zapret (bol-van) and the zapret-discord-youtube / zapret-discord-youtube-linux bundles to Android without root. Instead of a WinDivert driver or NFQUEUE it uses the stock VpnService: the app raises a tunnel, runs its own TCP/IP stack and repacks the first bytes of the TLS handshake so the DPI never sees the SNI.</string>
     <string name="about_matrix">What is available without root</string>

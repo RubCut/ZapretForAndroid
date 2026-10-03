@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # pipefail обязателен: gradle пишется в tee, и без него шаг всегда «зелёный».
+    env:
+      GIT_SHA: ${{ github.sha }}
     defaults:
       run:
         shell: bash -eo pipefail {0}

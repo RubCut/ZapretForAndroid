@@ -50,6 +50,10 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+        // Метка коммита, из которого собран APK: CI передаёт GIT_SHA из
+        // github.sha. По ней в журнале и на экране «О приложении» видно,
+        // какая именно сборка стоит на устройстве.
+        buildConfigField("String", "GIT_SHA", "\"" + (System.getenv("GIT_SHA") ?: "dev") + "\"")
 
         vectorDrawables.useSupportLibrary = true
     }

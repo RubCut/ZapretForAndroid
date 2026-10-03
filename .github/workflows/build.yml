@@ -60,6 +60,14 @@ jobs:
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.9 --distribution-type bin 2>&1 | tee wrapper.log
 
+      # Интеграционные тесты стека на JVM: полное TCP-соединение через TcpStack,
+      # UDP-релей, контрольные суммы независимым эталоном, кодек DNS.
+      # Падают раньше сборки APK и сразу показывают поломку пакетного тракта.
+      - name: Run JVM integration tests
+        id: test
+        continue-on-error: true
+        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest --console=plain 2>&1 | tee test.log
+
       - name: Build release APK (signed, minified)
         id: release
         continue-on-error: true
@@ -74,7 +82,7 @@ jobs:
       # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции
       # дублируются аннотациями checks API — они читаются через api.github.com.
       - name: Surface build errors as annotations
-        if: steps.release.outcome == 'failure' || steps.debug.outcome == 'failure'
+        if: steps.release.outcome == 'failure' || steps.debug.outcome == 'failure' || steps.test.outcome == 'failure'
         run: |
           python3 - <<'PY'
           import os, re
@@ -109,7 +117,7 @@ jobs:
                   esc = c.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
                   print("::error title=%s build failed (%d/%d)::%s" % (label, n, len(chunks), esc))
 
-          for label, path in (("release", "build-release.log"), ("debug", "build-debug.log")):
+          for label, path in (("release", "build-release.log"), ("debug", "build-debug.log"), ("test", "test.log")):
               body = clean(path)
               if body:
                   emit(label, body)
@@ -126,6 +134,7 @@ jobs:
             wrapper.log
             build-release.log
             build-debug.log
+            test.log
           if-no-files-found: ignore
           retention-days: 14
 

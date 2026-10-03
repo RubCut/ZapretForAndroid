@@ -111,6 +111,12 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // android.util.Log / SystemClock в JVM-тестах возвращают значения по
+        // умолчанию вместо падения: стеку они нужны только как метки времени.
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += setOf(
@@ -144,4 +150,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
+
+    testImplementation("junit:junit:4.13.2")
 }

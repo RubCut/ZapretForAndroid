@@ -232,6 +232,13 @@ class ZapretVpnService : VpnService() {
     }
 
     private fun establish(requested: AppConfig) {
+        // Защита от любого пути, который мог бы поднять туннель «в выключенном»
+        // состоянии: перезапуск, автопереподключение после отзыва и т.п.
+        if (!tunnelRequired(requested)) {
+            LogManager.i(LogTag.VPN, "Туннель не поднимается: профиль выключен или нет ни IPv4, ни IPv6")
+            stopEverything("профиль выключен")
+            return
+        }
         mtuCap = computeMtuCap(requested)
         val cfg = if (requested.mtu > mtuCap) requested.copy(mtu = mtuCap) else requested
         if (cfg.mtu != requested.mtu) {
@@ -514,8 +521,16 @@ class ZapretVpnService : VpnService() {
                 val sig = signature(cfg)
                 if (sig != lastSignature) {
                     lastSignature = sig
-                    LogManager.i(LogTag.VPN, "Изменились параметры туннеля — перезапуск")
-                    restart()
+                    if (!tunnelRequired(cfg)) {
+                        // «Выключено» должно означать именно отсутствие VPN:
+                        // интерфейс освобождается, и телефон возвращается к
+                        // обычной сети оператора.
+                        LogManager.i(LogTag.VPN, "Профиль выключен — останавливаю туннель")
+                        stopEverything("профиль выключен")
+                    } else {
+                        LogManager.i(LogTag.VPN, "Изменились параметры туннеля — перезапуск")
+                        restart()
+                    }
                 } else {
                     updateNotification()
                 }
@@ -527,6 +542,10 @@ class ZapretVpnService : VpnService() {
         listOf(cfg.mtu, cfg.ipv4, cfg.ipv6, cfg.appScope, cfg.appPackages.sorted().joinToString(","), cfg.profile)
             .joinToString("|")
 
+    /** Туннель нужен только при включённом профиле и хотя бы одной семье IP. */
+    private fun tunnelRequired(cfg: AppConfig): Boolean =
+        cfg.profile != ProfileId.OFF && (cfg.ipv4 || cfg.ipv6)
+
     private fun restart() {
         running = false
         teardown()
@@ -534,6 +553,10 @@ class ZapretVpnService : VpnService() {
             delay(200)
             val cfg = AppGraph.config.current
             withContext(Dispatchers.Main) {
+                if (!tunnelRequired(cfg)) {
+                    stopEverything("профиль выключен")
+                    return@withContext
+                }
                 try {
                     scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
                     TrafficStats.reset()

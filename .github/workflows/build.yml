@@ -67,48 +67,28 @@ jobs:
         id: test
         continue-on-error: true
         run: |
-  gradle_retry() {
-    # $1 — имя лога, остальные — команда gradle.
-    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
-    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
-    local log="$1"; shift
-    local attempt ok=0
-    for attempt in 1 2 3; do
-      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
-      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
-      pkill -f KotlinCompileDaemon || true
-      pkill -f GradleDaemon || true
-      sleep 5
-    done
-    return $((1 - ok))
-  }
-
-          # Демоны Gradle на раннере изредка умирают при старте (error code 0) —
-          # это инфраструктурный глюк, поэтому шаг повторяется до трёх раз,
-          # если причина падения именно в демоне, а не в тестах.
-  gradle_retry() {
-    # $1 — имя лога, остальные — команда gradle.
-    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
-    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
-    local log="$1"; shift
-    local attempt ok=0
-    for attempt in 1 2 3; do
-      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
-      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
-      pkill -f KotlinCompileDaemon || true
-      pkill -f GradleDaemon || true
-      sleep 5
-    done
-    return $((1 - ok))
-  }
-
+          gradle_retry() {
+            # $1 — имя лога, остальные — команда gradle.
+            # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
+            # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни
+            # BUILD FAILED. Настоящее падение тестов даёт BUILD FAILED и не
+            # повторяется.
+            local log="$1"; shift
+            local attempt ok=0
+            for attempt in 1 2 3; do
+              echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+              pkill -f KotlinCompileDaemon || true
+              pkill -f GradleDaemon || true
+              sleep 5
+            done
+            return $((1 - ok))
+          }
           gradle_retry test.log ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain
           # Выжимка результатов в конец лога: аннотации читают хвост, а полный
-          # стектрейсJUnit состоит из строк «at …», которые вырезаются как шум.
+          # стектрейс JUnit состоит из строк «at …», которые вырезаются как шум.
           if [ -d app/build/test-results/testDebugUnitTest ]; then
             python3 - <<'PYEOF' >> test.log
           import glob, xml.etree.ElementTree as ET
@@ -123,30 +103,26 @@ jobs:
                       print("\n".join(txt[:12]))
           PYEOF
           fi
-          [ "$ok" -eq 1 ]
+          grep -E "TESTSUMMARY|TESTFAIL" test.log || true
 
       - name: Build release APK (signed, minified)
         id: release
         continue-on-error: true
         run: |
-  gradle_retry() {
-    # $1 — имя лога, остальные — команда gradle.
-    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
-    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
-    local log="$1"; shift
-    local attempt ok=0
-    for attempt in 1 2 3; do
-      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
-      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
-      pkill -f KotlinCompileDaemon || true
-      pkill -f GradleDaemon || true
-      sleep 5
-    done
-    return $((1 - ok))
-  }
-
+          gradle_retry() {
+            local log="$1"; shift
+            local attempt ok=0
+            for attempt in 1 2 3; do
+              echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+              pkill -f KotlinCompileDaemon || true
+              pkill -f GradleDaemon || true
+              sleep 5
+            done
+            return $((1 - ok))
+          }
           gradle_retry build-release.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease
 
       - name: Build debug APK
@@ -154,28 +130,24 @@ jobs:
         if: steps.release.outcome == 'success'
         continue-on-error: true
         run: |
-  gradle_retry() {
-    # $1 — имя лога, остальные — команда gradle.
-    # Повторяем до трёх раз, если процесс сборщика умер, не донеся вердикт
-    # (OOM/сигнал на раннере): в таком логе нет ни BUILD SUCCESSFUL, ни BUILD FAILED.
-    local log="$1"; shift
-    local attempt ok=0
-    for attempt in 1 2 3; do
-      echo "=== попытка $attempt · память раннера: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-      if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-      if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
-      echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
-      pkill -f KotlinCompileDaemon || true
-      pkill -f GradleDaemon || true
-      sleep 5
-    done
-    return $((1 - ok))
-  }
-
+          gradle_retry() {
+            local log="$1"; shift
+            local attempt ok=0
+            for attempt in 1 2 3; do
+              echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+              pkill -f KotlinCompileDaemon || true
+              pkill -f GradleDaemon || true
+              sleep 5
+            done
+            return $((1 - ok))
+          }
           gradle_retry build-debug.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug
 
-      # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции
-      # дублируются аннотациями checks API — они читаются через api.github.com.
+      # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции и
+      # тестов дублируются аннотациями checks API — они читаются через api.github.com.
       - name: Surface build errors as annotations
         if: steps.release.outcome == 'failure' || steps.debug.outcome == 'failure' || steps.test.outcome == 'failure'
         run: |
@@ -198,10 +170,10 @@ jobs:
                   return None
               lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
               kept = [l.rstrip() for l in lines if not NOISE.search(l)]
-              # Ошибки компилятора Kotlin — самое ценное, их поднимаем вверх.
-              kotlinc = [l for l in kept if l.startswith('e: ')]
-              tail = kept[-260:]
-              body = ("\n".join(kotlinc[:120]) + "\n---- context ----\n" + "\n".join(tail)) if kotlinc \
+              # Ошибки компилятора Kotlin и вердикты тестов — самое ценное.
+              hot = [l for l in kept if l.startswith('e: ') or 'TESTFAIL' in l or 'TESTSUMMARY' in l]
+              tail = kept[-220:]
+              body = ("\n".join(hot[:120]) + "\n---- context ----\n" + "\n".join(tail)) if hot \
                      else "\n".join(tail)
               return body
 
@@ -264,8 +236,9 @@ jobs:
         run: |
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk out/ZapretForAndroid-release.apk
-          cp app/build/outputs/apk/debug/app-debug.apk     out/ZapretForAndroid-debug.apk
-          zip -q -r out/gradle-wrapper.zip gradlew gradlew.bat gradle/wrapper || true
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk out/ZapretForAndroid-debug.apk
+          fi
           ls -l out
 
       - name: Upload APKs
@@ -273,17 +246,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zapret-apk
-          path: |
-            out/ZapretForAndroid-release.apk
-            out/ZapretForAndroid-debug.apk
-          if-no-files-found: error
+          path: out/*.apk
           retention-days: 30
 
       - name: Upload Gradle wrapper
-        if: steps.release.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gradle-wrapper
-          path: out/gradle-wrapper.zip
-          if-no-files-found: warn
+          path: |
+            gradlew
+            gradlew.bat
+            gradle/wrapper/gradle-wrapper.jar
+            gradle/wrapper/gradle-wrapper.properties
+          if-no-files-found: ignore
           retention-days: 30

@@ -94,15 +94,17 @@ class TcpRelayTest {
         pseudo.write(src.address)
         pseudo.write(dst.address)
         if (src.address.size == 4) {
+            // IPv4: ноль, протокол, длина — двумя байтами.
             pseudo.write(0)
             pseudo.write(proto)
+            pseudo.write((segment.size ushr 8) and 0xFF)
+            pseudo.write(segment.size and 0xFF)
         } else {
+            // IPv6: 4-байтовая длина, три нуля и next header. Длина входит ОДИН раз.
             val l = segment.size
             pseudo.write(byteArrayOf((l ushr 24).toByte(), (l ushr 16).toByte(), (l ushr 8).toByte(), l.toByte()))
             pseudo.write(byteArrayOf(0, 0, 0, proto.toByte()))
         }
-        pseudo.write((segment.size ushr 8) and 0xFF)
-        pseudo.write(segment.size and 0xFF)
         val all = pseudo.toByteArray() + segment
         var sum = 0L
         var i = 0

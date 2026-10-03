@@ -98,7 +98,7 @@ class TcpRelayTest {
             pseudo.write(proto)
         } else {
             val l = segment.size
-            pseudo.write(byteArrayOf((l ushr 24) and 0xFF, (l ushr 16) and 0xFF, (l ushr 8) and 0xFF, l and 0xFF))
+            pseudo.write(byteArrayOf((l ushr 24).toByte(), (l ushr 16).toByte(), (l ushr 8).toByte(), l.toByte()))
             pseudo.write(byteArrayOf(0, 0, 0, proto.toByte()))
         }
         pseudo.write((segment.size ushr 8) and 0xFF)
@@ -198,7 +198,7 @@ class TcpRelayTest {
 
     private val synOptions: ByteArray by lazy {
         val b = ByteArrayOutputStream()
-        b.write(byteArrayOf(2, 4, 5, 188))                          // MSS 1460
+        b.write(byteArrayOf(2, 4, 5, 188.toByte()))                          // MSS 1460
         b.write(byteArrayOf(3, 3, 7))                               // wscale 7
         b.write(byteArrayOf(4, 2))                                  // SACK permitted
         b.write(byteArrayOf(8, 10, 0, 0, 0, 1, 0, 0, 0, 0))         // timestamps

@@ -115,14 +115,23 @@ class TcpRelayTest {
         return (sum.inv() and 0xFFFF).toInt()
     }
 
+    /**
+     * Проверка суммы пакета: однодополнительная сумма псевдозаголовка и сегмента
+     * ВМЕСТЕ с заполненным полем контрольной суммы обязана давать 0xFFFF, то есть
+     * ~sum == 0. Ненулевой результат означает повреждённый или неверно собранный
+     * пакет.
+     */
     private fun assertChecksumsValid(packet: ByteArray) {
         val ip = parseIp(packet, packet.size)!!
         val seg = packet.copyOfRange(ip.payloadOffset, ip.payloadOffset + ip.payloadLength)
         val proto = if (ip.isTcp) 6 else 17
-        val expected = referenceChecksum(ip.src, ip.dst, proto, seg)
-        val fieldOffset = if (ip.isTcp) 16 else 6
-        val actual = getU16(packet, ip.payloadOffset + fieldOffset)
-        assertEquals("контрольная сумма сегмента неверна", expected, actual)
+        val verified = referenceChecksum(ip.src, ip.dst, proto, seg)
+        assertEquals(
+            "контрольная сумма сегмента неверна (поле=${
+                getU16(packet, ip.payloadOffset + if (ip.isTcp) 16 else 6)
+            })",
+            0, verified
+        )
     }
 
     private class Pkt {

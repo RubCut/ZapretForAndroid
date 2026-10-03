@@ -36,7 +36,7 @@ data class TcpKey(
 /** Потокобезопасная запись собранных пакетов в tun. */
 class PacketWriter(private val out: OutputStream) {
     private val lock = Any()
-    private val dropped = AtomicInteger()
+    private val dropped = AtomicLong()
 
     /**
      * Наблюдатель исходящих пакетов. Нужен автоподбору стратегий: он подаёт в
@@ -45,14 +45,23 @@ class PacketWriter(private val out: OutputStream) {
     @Volatile
     var tap: ((ByteArray) -> Unit)? = null
 
-    val droppedCount: Int get() = dropped.get()
+    val droppedCount: Long get() = dropped.get()
 
     fun write(packet: ByteArray) {
         synchronized(lock) {
             try {
                 out.write(packet)
             } catch (e: Exception) {
-                dropped.incrementAndGet()
+                val n = dropped.incrementAndGet()
+                // Без этого запись в tun может молча не удаляться (например,
+                // пакет больше MTU → EINVAL), и пользователь видит просто
+                // «интернета нет», хотя причина — на выходе из стека.
+                if (n <= 3L) {
+                    dev.rubcut.zapret.core.LogManager.w(
+                        "Запись пакета в tun не удалась ($n/3, ${packet.size} байт): " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
+                }
             }
         }
         try {

@@ -106,7 +106,27 @@ class DnsResolver(
         result
     }
 
+    /** Сколько раз подряд DoH/DoT не ответил. Используется самоисцелением. */
+    @Volatile
+    var secureDnsFailures = 0
+        private set
+
+    @Volatile
+    private var secureBypassUntil = 0L
+
     private fun resolveUpstream(cfg: AppConfig, name: String, type: Int): DnsResult {
+        val secureMode = cfg.dnsMode == DnsMode.DOH || cfg.dnsMode == DnsMode.DOT
+        // DoH/DoT регулярно блокируется самим DPI. Ждать таймаут на каждом
+        // запросе — значит выглядеть как «интернет не работает вовсе», поэтому
+        // после серии аварий минутный интервал ходим сразу в системный DNS.
+        if (secureMode && System.currentTimeMillis() < secureBypassUntil) {
+            val r = try {
+                viaUdp(cfg, name, type, systemServers(), "system")
+            } catch (e: Exception) {
+                DnsResult.Failed(e.message ?: "unknown")
+            }
+            if (r !is DnsResult.Failed) return r
+        }
         val primary = try {
             when (cfg.dnsMode) {
                 DnsMode.SYSTEM -> viaUdp(cfg, name, type, systemServers(), "system")
@@ -120,7 +140,20 @@ class DnsResolver(
         }
         // DnsResult.Blocked (NXDOMAIN/блок-лист) — это ответ, а не авария:
         // откатываться на другой сервер здесь нельзя, иначе блок-лист не сработает.
-        if (primary !is DnsResult.Failed) return primary
+        if (primary !is DnsResult.Failed) {
+            if (secureMode) secureDnsFailures = 0
+            return primary
+        }
+        if (secureMode) {
+            secureDnsFailures++
+            if (secureDnsFailures >= 2) {
+                secureBypassUntil = System.currentTimeMillis() + 60_000
+                LogManager.w(
+                    "DNS: ${cfg.dnsMode} не отвечает (${secureDnsFailures} раз подряд) — " +
+                        "60 с использую системный DNS напрямую"
+                )
+            }
+        }
         if (cfg.dnsMode == DnsMode.SYSTEM) return primary
 
         // Запасной путь. Без него любая авария DoH/DoT выглядела бы для

@@ -645,6 +645,19 @@ class ZapretVpnService : VpnService() {
             val read = readCount.get()
             val ok = stack.establishedTotal.get()
             val failed = stack.failedTotal.get()
+            // DoH/DoT в РФ часто блокируется самим DPI: каждая попытка ждёт
+            // таймаут, и для пользователя это выглядит как полный отказ сети.
+            val resolver = dnsHandler?.resolver
+            val cfgNow = AppGraph.config.current
+            if (resolver != null && resolver.secureDnsFailures >= 3 &&
+                (cfgNow.dnsMode == DnsMode.DOH || cfgNow.dnsMode == DnsMode.DOT)
+            ) {
+                LogManager.w(
+                    "Самопроверка: ${cfgNow.dnsMode} не ответил ${resolver.secureDnsFailures} раз — " +
+                        "переключаю DNS в системный режим"
+                )
+                runCatching { AppGraph.config.update { it.copy(dnsMode = DnsMode.SYSTEM) } }
+            }
             if (read <= 0) return@launch
             if (ok > 0) {
                 LogManager.i(LogTag.VPN, "Самопроверка: установлено TCP-соединений через туннель: $ok (ошибок: $failed)")
@@ -655,7 +668,6 @@ class ZapretVpnService : VpnService() {
                     "(ошибок: $failed). Запускаю автоподбор стратегии"
             )
             val hosts = autopilotHosts(tunnelConfig().profile)
-            val resolver = dnsHandler?.resolver
             val result = try {
                 StrategyAutopilot(stack).tune(hosts) { host ->
                     val r = resolver?.lookup(host, DnsType.A)
@@ -839,7 +851,7 @@ class ZapretVpnService : VpnService() {
         return "прочитано из tun=${readCount.get()}, обработано=${handledCount.get()}, ошибок=${errorCount.get()}; " +
             "TCP установлено=${stack?.establishedTotal?.get() ?: 0}, упало=${stack?.failedTotal?.get() ?: 0}, " +
             "активных=${stack?.activeCount ?: 0}; udp-сессий=${udpStack?.activeCount ?: 0}; " +
-            "mtu=$negotiatedMtu; изоляция: $isolationSummary"
+            "mtu=$negotiatedMtu; в tun не записалось=${tcpStack?.packetWriter?.droppedCount ?: 0}; изоляция: $isolationSummary"
     }
 
     /** Живой стек туннеля — для автоподбора стратегий из UI. */

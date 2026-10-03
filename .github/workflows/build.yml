@@ -101,13 +101,38 @@ jobs:
       - name: Build release APK (signed, minified)
         id: release
         continue-on-error: true
-        run: ./gradlew --no-daemon --stacktrace assembleRelease 2>&1 | tee build-release.log
+        run: |
+          pkill -f KotlinCompileDaemon || true
+          ok=0
+          for attempt in 1 2 3; do
+            if ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease 2>&1 | tee build-release.log; then
+              ok=1
+              break
+            fi
+            grep -q "daemon has terminated unexpectedly" build-release.log || break
+            echo "=== попытка $attempt: демон Gradle/Kotlin умер, повторяю ===" | tee -a build-release.log
+            pkill -f KotlinCompileDaemon || true
+            sleep 5
+          done
+          [ "$ok" -eq 1 ]
 
       - name: Build debug APK
         id: debug
         if: steps.release.outcome == 'success'
         continue-on-error: true
-        run: ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build-debug.log
+        run: |
+          ok=0
+          for attempt in 1 2 3; do
+            if ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug 2>&1 | tee build-debug.log; then
+              ok=1
+              break
+            fi
+            grep -q "daemon has terminated unexpectedly" build-debug.log || break
+            echo "=== попытка $attempt: демон Gradle/Kotlin умер, повторяю ===" | tee -a build-debug.log
+            pkill -f KotlinCompileDaemon || true
+            sleep 5
+          done
+          [ "$ok" -eq 1 ]
 
       # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции
       # дублируются аннотациями checks API — они читаются через api.github.com.

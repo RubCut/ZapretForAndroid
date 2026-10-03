@@ -47,6 +47,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.FileInputStream
+import java.util.concurrent.atomic.AtomicLong
 import java.io.FileOutputStream
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -425,7 +426,11 @@ class ZapretVpnService : VpnService() {
         VpnController.markRunning()
 
         startForegroundSafe(profileName(cfg.profile))
+        readCount.set(0)
+        handledCount.set(0)
+        errorCount.set(0)
         startReader()
+        startTrafficWatchdog()
         startConfigWatcher()
         startNotificationTicker()
         selfTest()
@@ -549,6 +554,11 @@ class ZapretVpnService : VpnService() {
     /*  Основной цикл чтения tun                                     */
     /* ------------------------------------------------------------ */
 
+    /** Сколько пакетов пришло из tun. Нуль при поднятом туннеле — отдельная беда. */
+    private val readCount = AtomicLong()
+    private val handledCount = AtomicLong()
+    private val errorCount = AtomicLong()
+
     private fun startReader() {
         val thread = Thread({
             val stream = input ?: return@Thread
@@ -557,22 +567,57 @@ class ZapretVpnService : VpnService() {
                 val len: Int = try {
                     stream.read(buf)
                 } catch (e: Exception) {
-                    if (running) LogManager.d(LogTag.VPN, "tun read: ${e.message}")
+                    if (running) {
+                        val n = errorCount.incrementAndGet()
+                        if (n <= 3) LogManager.w("Ошибка чтения tun (${n}/3): ${e.message}")
+                    }
                     -1
                 }
                 if (len < 0) break
                 if (len == 0) continue
+                val n = readCount.incrementAndGet()
+                if (n == 1L) {
+                    LogManager.i(LogTag.VPN, "Первый пакет из tun получен ($len байт) — маршрут в туннель есть")
+                }
                 try {
                     handlePacket(buf, len)
+                    handledCount.incrementAndGet()
                 } catch (e: Exception) {
-                    LogManager.d(LogTag.VPN, "handlePacket: ${e.message}")
+                    val c = errorCount.incrementAndGet()
+                    if (c <= 3) LogManager.w("Ошибка обработки пакета ($len байт, ${c}/3): ${e.message}", e)
                 }
             }
-            LogManager.d(LogTag.VPN, "цикл чтения tun завершён")
+            LogManager.w("Цикл чтения tun завершён: прочитано ${readCount.get()}, обработано ${handledCount.get()}")
         }, "zapret-tun-reader")
         thread.priority = Thread.NORM_PRIORITY + 2
         readerThread = thread
         thread.start()
+    }
+
+    /**
+     * Через несколько секунд после старта туннеля отвечаем на главный вопрос:
+     * доходят ли до нас пакеты вообще. Если tun молчит — проблема не в
+     * стратегиях, а в маршрутизации системы (другой VPN, антивирус, прокси).
+     */
+    private fun startTrafficWatchdog() {
+        val before = readCount.get()
+        AppGraph.scope.launch {
+            delay(5000)
+            if (!running) return@launch
+            val now = readCount.get()
+            if (now - before == 0L) {
+                LogManager.w(
+                    "За 5 с из tun не пришло ни одного пакета: трафик не маршрутизируется в туннель. " +
+                        "Причина обычно вне приложения — другой активный VPN, антивирус с собственным " +
+                        "туннелем или системный прокси"
+                )
+            } else {
+                LogManager.i(
+                    LogTag.VPN,
+                    "tun за 5 с: прочитано ${now - before} пакетов, обработано ${handledCount.get()}, ошибок ${errorCount.get()}"
+                )
+            }
+        }
     }
 
     private fun handlePacket(buf: ByteArray, len: Int) {

@@ -86,23 +86,41 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, re
-          def tail(path, limit=160):
+
+          # Стектрейс Gradle занимает тысячи строк и топит настоящую причину,
+          # а скачать лог сессии из внешнего окружения часто нельзя — поэтому
+          # шум вырезается, а остаток публикуется аннотациями checks API.
+          NOISE = re.compile(
+              r'^\s*(at\s|\.\.\.\s|\d+ more\s|Caused by: java\.io)'
+              r'|^\s*(org\.gradle|java\.base|jdk\.internal|sun\.nio|com\.android\.build\.gradle\.internal)'
+              r'|^\s*$'
+              r'|^Deprecated Gradle features'
+              r'|^\s*> Run with --'
+          )
+
+          def clean(path):
               if not os.path.exists(path):
                   return None
-              txt = open(path, encoding='utf-8', errors='replace').read()
-              pat = re.compile(r'^e: |^w: .*deprecat|error: |FAILURE: |What went wrong|'
-                                r'^> Task .* FAILED|Execution failed|Caused by: |\* Where:|\* Try:|'
-                                r'^\s+at org\.gradle|Compilation error|Unresolved reference|'
-                                r'not enough information|type mismatch|overload resolution', re.I)
-              keep = [l for l in txt.splitlines() if pat.search(l)]
-              body = "\n".join(keep[:limit]) if keep else txt[-8000:]
-              return body[-24000:]
+              lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+              kept = [l.rstrip() for l in lines if not NOISE.search(l)]
+              # Ошибки компилятора Kotlin — самое ценное, их поднимаем вверх.
+              kotlinc = [l for l in kept if l.startswith('e: ')]
+              tail = kept[-260:]
+              body = ("\n".join(kotlinc[:120]) + "\n---- context ----\n" + "\n".join(tail)) if kotlinc \
+                     else "\n".join(tail)
+              return body
+
+          def emit(label, body):
+              # Одна аннотация ограничена 64 КБ; режем на куски, чтобы влезло всё важное.
+              chunks = [body[i:i + 20000] for i in range(0, len(body), 20000)][:4]
+              for n, c in enumerate(chunks, 1):
+                  esc = c.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print("::error title=%s build failed (%d/%d)::%s" % (label, n, len(chunks), esc))
+
           for label, path in (("release", "build-release.log"), ("debug", "build-debug.log")):
-              body = tail(path)
-              if body is None:
-                  continue
-              esc = body.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print("::error title=%s build failed::%s" % (label, esc))
+              body = clean(path)
+              if body:
+                  emit(label, body)
           PY
           exit 1
 

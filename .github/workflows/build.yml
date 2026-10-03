@@ -131,16 +131,27 @@ jobs:
         if: steps.release.outcome == 'success'
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          # apksigner verify --print-certs намеренно НЕ используется: детали ключа
+          # в лог не печатаем. Проверяем только факт валидности схемы v1/v2/v3.
+          report=""
+          fail=0
           for f in app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/debug/app-debug.apk; do
             [ -f "$f" ] || continue
-            echo "=== $f ==="
-            ls -l "$f"
+            name=$(basename "$f")
+            size=$(du -h "$f" | cut -f1)
             if "$BT/apksigner" verify "$f" > /dev/null 2>&1; then
-              echo "$f: подпись валидна"
+              schemes=$("$BT/apksigner" verify -v "$f" 2>/dev/null | grep -c "scheme.*true" || true)
+              report="$report$name: подпись валидна (схем: $schemes), размер $size%0A"
             else
-              echo "$f: НЕ подписан или подпись невалидна"
+              report="$report$name: ПОДПИСЬ НЕВАЛИДНА%0A"
+              fail=1
             fi
           done
+          echo "::notice title=APK::$report"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error title=Signing::Один из APK не прошёл проверку подписи"
+            exit 1
+          fi
 
       - name: Collect artifacts
         if: steps.release.outcome == 'success'

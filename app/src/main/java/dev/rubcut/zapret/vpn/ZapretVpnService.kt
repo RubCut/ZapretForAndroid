@@ -30,6 +30,9 @@ import dev.rubcut.zapret.core.net.parseIp
 import dev.rubcut.zapret.core.net.parseTcp
 import dev.rubcut.zapret.core.net.parseUdp
 import dev.rubcut.zapret.core.stack.PacketWriter
+import dev.rubcut.zapret.core.dns.DnsResult
+import dev.rubcut.zapret.core.dns.DnsType
+import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.core.stack.TcpStack
 import dev.rubcut.zapret.core.stack.UdpStack
 import dev.rubcut.zapret.data.AppConfig
@@ -431,6 +434,7 @@ class ZapretVpnService : VpnService() {
         errorCount.set(0)
         startReader()
         startTrafficWatchdog()
+        startSelfHeal()
         startConfigWatcher()
         startNotificationTicker()
         selfTest()
@@ -618,6 +622,72 @@ class ZapretVpnService : VpnService() {
                 )
             }
         }
+    }
+
+    /**
+     * Самоисцеление: если туннель поднят, пакеты в него поступают, но за
+     * четверть минуты не установилось НИ ОДНОГО TCP-соединения, значит текущая
+     * стратегия на этом пути не работает. Тогда автоподбор прогоняет кандидатов
+     * сам и применяет победителя — без участия пользователя.
+     */
+    private fun startSelfHeal() {
+        AppGraph.scope.launch {
+            delay(25_000)
+            if (!running) return@launch
+            val stack = tcpStack ?: return@launch
+            val read = readCount.get()
+            val ok = stack.establishedTotal.get()
+            val failed = stack.failedTotal.get()
+            if (read <= 0) return@launch
+            if (ok > 0) {
+                LogManager.i(LogTag.VPN, "Самопроверка: установлено TCP-соединений через туннель: $ok (ошибок: $failed)")
+                return@launch
+            }
+            LogManager.w(
+                "Самопроверка: за 25 с прошло $read пакетов, но ни одно TCP-соединение не установилось " +
+                    "(ошибок: $failed). Запускаю автоподбор стратегии"
+            )
+            val hosts = autopilotHosts(tunnelConfig().profile)
+            val resolver = dnsHandler?.resolver
+            val result = try {
+                StrategyAutopilot(stack).tune(hosts) { host ->
+                    val r = resolver?.lookup(host, DnsType.A)
+                    (r as? DnsResult.Addresses)?.list?.firstOrNull()
+                }
+            } catch (e: Exception) {
+                LogManager.w("Автоподбор завершился ошибкой: ${e.message}")
+                null
+            }
+            if (result == null) {
+                LogManager.w(
+                    "Автоподбор: ни одна стратегия не получила ответа сервера — дело не в обходе, " +
+                        "а в сети, DNS или самом туннеле"
+                )
+                return@launch
+            }
+            LogManager.i(LogTag.DPI, "Автоподбор: подошла стратегия «${result.name}» (${result.ok}/${result.total}) — применяю")
+            try {
+                AppGraph.config.update {
+                    it.copy(
+                        desync = result.strategy.desync,
+                        splitPositions = result.strategy.splitPositions,
+                        splitDelayMs = result.strategy.splitDelayMs,
+                        tlsrecParts = result.strategy.tlsrecParts
+                    )
+                }
+            } catch (e: Exception) {
+                LogManager.w("Не удалось сохранить подобранную стратегию: ${e.message}")
+            }
+        }
+    }
+
+    /** Хосты для проверки: по профилю берём те, ради которых туннель и включён. */
+    private fun autopilotHosts(profile: dev.rubcut.zapret.data.ProfileId): List<String> = when (profile) {
+        dev.rubcut.zapret.data.ProfileId.YOUTUBE -> listOf("www.youtube.com", "youtubei.googleapis.com")
+        dev.rubcut.zapret.data.ProfileId.DISCORD -> listOf("discord.com", "gateway.discord.gg")
+        dev.rubcut.zapret.data.ProfileId.COMBINED -> listOf("www.youtube.com", "discord.com")
+        dev.rubcut.zapret.data.ProfileId.MAX -> listOf("www.youtube.com", "www.google.com", "discord.com")
+        else -> listOf("www.google.com")
     }
 
     private fun handlePacket(buf: ByteArray, len: Int) {

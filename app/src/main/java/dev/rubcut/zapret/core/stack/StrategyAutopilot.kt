@@ -94,7 +94,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
         val tap: (ByteArray) -> Unit = { p -> captured.trySend(p) }
         var result = false
         stack.packetWriter.tap = tap
-        stack.forcedStrategy = strategy
+        stack.probeFor = clientPort to strategy
         try {
             val syn = clientTcp(addr, clientPort, port, clientIsn, 0, TcpFlag.SYN, options = synOptions())
             feed(syn)
@@ -130,7 +130,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // 0x15 (alert) и мусор означают, что обход не сработал.
             result = first == 0x16
         } finally {
-            stack.forcedStrategy = null
+            stack.probeFor = null
             stack.packetWriter.tap = null
             runCatching {
                 feed(

@@ -23,6 +23,7 @@ import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /** Ключ TCP-потока в направлении «приложение → сервер». */
 data class TcpKey(
@@ -102,16 +103,29 @@ class TcpStack(
     val packetWriter: PacketWriter get() = writer
 
     /**
-     * Стратегия, принудительно применяемая ко всем новым соединениям.
-     * Используется автоподбором: на время прогона зонда правила конфигурации
-     * игнорируются, чтобы проверялся именно кандидат.
+     * Пара «порт клиента → стратегия» для зонда автоподбора. Принудительная
+     * стратегия действует ТОЛЬКО для этого соединения, настоящий трафик
+     * продолжает идти по правилам конфигурации.
      */
     @Volatile
-    var forcedStrategy: dev.rubcut.zapret.data.Strategy? = null
+    var probeFor: Pair<Int, dev.rubcut.zapret.data.Strategy>? = null
 
-    fun resolveFor(port: Int, host: String?, ip: InetAddress?): StrategyResolver.Decision =
-        forcedStrategy?.let { StrategyResolver.Decision(it, null, "автоподбор") }
-            ?: resolver.resolveTcp(port, host, ip)
+    /** Сколько соединений успешно дошло до upstream-сокета и сколько упало. */
+    val establishedTotal = AtomicLong()
+    val failedTotal = AtomicLong()
+
+    fun resolveFor(
+        port: Int,
+        host: String?,
+        ip: InetAddress?,
+        clientPort: Int
+    ): StrategyResolver.Decision {
+        val probe = probeFor
+        if (probe != null && probe.first == clientPort) {
+            return StrategyResolver.Decision(probe.second, null, "автоподбор")
+        }
+        return resolver.resolveTcp(port, host, ip)
+    }
 
     /** Сколько соединений уже продиагностировано в журнал обычным уровнем. */
     private val diagCounter = AtomicInteger()

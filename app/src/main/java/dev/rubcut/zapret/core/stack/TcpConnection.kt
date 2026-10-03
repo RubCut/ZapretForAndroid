@@ -146,7 +146,7 @@ class TcpConnection(
     fun start() {
         TrafficStats.connectionOpened()
         sendSynAck()
-        connectStrategy = stack.resolveFor(serverPort, ReverseHostCache.get(serverAddr), serverAddr).strategy
+        connectStrategy = stack.resolveFor(serverPort, ReverseHostCache.get(serverAddr), serverAddr, clientPort).strategy
         val scope = stack.scope
         jobs += scope.launch(stack.io) { runConnection() }
         jobs += scope.launch(stack.io) { watchdog() }
@@ -161,6 +161,7 @@ class TcpConnection(
         val t0 = android.os.SystemClock.elapsedRealtime()
         try {
             socket = openUpstream()
+            stack.establishedTotal.incrementAndGet()
             if (verboseSlot) {
                 LogManager.i(
                     LogTag.TCP,
@@ -174,6 +175,7 @@ class TcpConnection(
             pumpDown.join()
             gracefulClose()
         } catch (e: Exception) {
+            stack.failedTotal.incrementAndGet()
             if (!closed) {
                 val msg = "upstream $description: ${e.javaClass.simpleName}: ${e.message}"
                 if (verboseSlot) LogManager.i(LogTag.TCP, "TCP #$slot · ОШИБКА · $msg") else LogManager.d(LogTag.TCP, msg)
@@ -282,7 +284,7 @@ class TcpConnection(
             ?: knownHost
         if (sni != null) detectedHost = sni
 
-        val decision = stack.resolveFor(serverPort, sni, serverAddr)
+        val decision = stack.resolveFor(serverPort, sni, serverAddr, clientPort)
         val strategy = decision.strategy
 
         if (strategy.isPassive) {

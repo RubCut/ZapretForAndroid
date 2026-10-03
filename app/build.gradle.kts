@@ -1,7 +1,43 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+/* ---------------------------------------------------------------------------
+ * Подпись релизной сборки.
+ *
+ * Ключ лежит в keystore/release.p12 и зафиксирован в репозитории: это даёт
+ * одинаковую подпись у локальной сборки, у CI и у следующих версий, поэтому
+ * APK ставится поверх предыдущего без удаления и без потери данных.
+ *
+ * Приоритет источников параметров:
+ *   1. -PZAPRET_* / gradle.properties
+ *   2. переменная окружения ZAPRET_*
+ *   3. keystore/signing.properties
+ *   4. запасное значение
+ *
+ * Если keystore вдруг отсутствует, релиз подписывается debug-ключом — сборка
+ * не падает, но в логе появляется предупреждение.
+ * ------------------------------------------------------------------------- */
+val fileProps = Properties().apply {
+    val f = rootProject.file("keystore/signing.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun signProp(name: String, fallback: String): String =
+    providers.gradleProperty(name).orNull?.takeIf { it.isNotBlank() }
+        ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: fileProps.getProperty(name)?.takeIf { it.isNotBlank() }
+        ?: fallback
+
+val releaseStoreFile = rootProject.file(signProp("ZAPRET_STORE_FILE", "keystore/release.p12"))
+val releaseSigningReady = releaseStoreFile.exists()
+
+if (!releaseSigningReady) {
+    logger.warn("ZapretForAndroid: ${'$'}releaseStoreFile не найден — релиз будет подписан debug-ключом")
 }
 
 android {
@@ -18,6 +54,22 @@ android {
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = signProp("ZAPRET_STORE_PASSWORD", "")
+                keyAlias = signProp("ZAPRET_KEY_ALIAS", "zapret")
+                keyPassword = signProp("ZAPRET_KEY_PASSWORD", "")
+                // V1 нужен отдельным OEM-установщикам, V2/V3 — современная схема.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -31,9 +83,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Подпись по умолчанию не настроена: соберите релизный APK ключом в Android Studio
-            // (Build > Generate Signed Bundle / APK) или `signingConfig` в этом файле.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (releaseSigningReady) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

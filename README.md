@@ -155,8 +155,34 @@ gradle wrapper --gradle-version 8.9
 | Compose BOM | 2024.10.01 |
 | JVM | 17 |
 
-Release-сборка подписана debug-ключом (`signingConfig = signingConfigs.getByName("debug")`),
-чтобы `./gradlew assembleRelease` работал «из коробки». Для публикации замените на свой keystore.
+### Подпись
+
+Релиз подписывается **зафиксированным ключом** `keystore/release.p12`
+(PKCS#12, alias `zapret`, срок действия 30 лет, параметры — в
+`keystore/signing.properties`). Ключ один и тот же для локальной сборки и для
+CI, поэтому новый APK ставится поверх старого без удаления приложения и без
+потери настроек.
+
+> Ключ намеренно лежит в публичном репозитории — иначе подпись «поехала» бы
+> между сборками. **Для Google Play он не годится**: сгенерируйте свой
+> (Android Studio → Build → Generate Signed Bundle / APK) и перекройте
+> параметры флагами `-PZAPRET_STORE_FILE=… -PZAPRET_STORE_PASSWORD=…
+> -PZAPRET_KEY_ALIAS=… -PZAPRET_KEY_PASSWORD=…` или переменными окружения
+> с теми же именами. Если `release.p12` отсутствует, релиз автоматически
+> откатывается на debug-ключ — сборка не падает.
+
+### Готовые APK из CI
+
+Каждый пуш собирает GitHub Actions (`.github/workflows/build.yml`):
+`assembleRelease` (подписанный, с R8) и `assembleDebug`. Артефакты —
+вкладка **Actions** → последний запуск → **Artifacts**:
+
+- `zapret-apk` — `ZapretForAndroid-release.apk` и `ZapretForAndroid-debug.apk`
+- `gradle-wrapper` — `gradlew`, `gradlew.bat`, `gradle/wrapper/` (распакуйте в
+  клон репозитория, чтобы собирать локально без установленного Gradle)
+
+В логе сборки шаг **Report signing** печатает сертификат, которым подписан
+каждый APK, — им можно убедиться, что подпись та самая.
 
 ---
 

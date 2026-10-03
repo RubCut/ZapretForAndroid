@@ -63,8 +63,8 @@ class StrategyAutopilot(private val stack: TcpStack) {
      */
     suspend fun tune(
         hosts: List<String>,
-        lookup: suspend (String) -> InetAddress?,
-        perHostTimeoutMs: Long = 6000
+        perHostTimeoutMs: Long = 6000,
+        lookup: suspend (String) -> InetAddress?
     ): TuneResult? {
         var best: TuneResult? = null
         for ((name, strategy) in CANDIDATES) {
@@ -149,6 +149,8 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 val p = ch.receive()
                 if (pred(p)) return@withTimeoutOrNull p
             }
+            @Suppress("UNREACHABLE_CODE")
+            null
         }
 
     private fun feed(packet: ByteArray) {

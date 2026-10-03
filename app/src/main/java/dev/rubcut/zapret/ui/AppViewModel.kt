@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.rubcut.zapret.AppGraph
+import dev.rubcut.zapret.R
 import dev.rubcut.zapret.core.ConnectionLog
 import dev.rubcut.zapret.core.LogEntry
 import dev.rubcut.zapret.core.LogManager

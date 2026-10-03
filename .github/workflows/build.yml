@@ -58,16 +58,6 @@ jobs:
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.9 --distribution-type bin 2>&1 | tee wrapper.log
 
-      - name: Show signing key
-        run: |
-          if [ -f keystore/release.p12 ]; then
-            echo "keystore present: $(wc -c < keystore/release.p12) bytes"
-            keytool -list -v -keystore keystore/release.p12 -storetype PKCS12 \
-              -storepass zapret-android 2>&1 | grep -E "Alias|Entry type|Valid|SHA256:|Owner" | head -12
-          else
-            echo "::warning::keystore/release.p12 missing — release falls back to the debug key"
-          fi
-
       - name: Build release APK (signed, minified)
         id: release
         continue-on-error: true
@@ -145,7 +135,11 @@ jobs:
             [ -f "$f" ] || continue
             echo "=== $f ==="
             ls -l "$f"
-            "$BT/apksigner" verify --print-certs "$f" 2>&1 | head -20 || true
+            if "$BT/apksigner" verify "$f" > /dev/null 2>&1; then
+              echo "$f: подпись валидна"
+            else
+              echo "$f: НЕ подписан или подпись невалидна"
+            fi
           done
 
       - name: Collect artifacts

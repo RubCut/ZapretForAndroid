@@ -21,11 +21,11 @@ androidx-activity-compose = { group = "androidx.activity", name = "activity-comp
 androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
 
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
-androidx-compose-ui = { group = "androidx.compose", name = "ui" }
-androidx-compose-ui-graphics = { group = "androidx.compose", name = "ui-graphics" }
-androidx-compose-ui-tooling = { group = "androidx.compose", name = "ui-tooling" }
-androidx-compose-ui-tooling-preview = { group = "androidx.compose", name = "ui-tooling-preview" }
-androidx-compose-foundation = { group = "androidx.compose", name = "foundation" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 

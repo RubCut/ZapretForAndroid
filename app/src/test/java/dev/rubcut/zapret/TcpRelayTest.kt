@@ -92,6 +92,104 @@ class TcpRelayTest {
 
     /** Эталонная контрольная сумма TCP/UDP, написанная независимо от боевого кода. */
     /**
+     * Тот же полный цикл, но по IPv6. На двухстёковых сетях приложения нередко
+     * предпочитают IPv6, поэтому ошибка в v6-ветке выглядит как «интернета нет
+     * вообще».
+     */
+    @Test
+    fun tcpPassiveRelayWorksOverIpv6() {
+        val loop = InetAddress.getByName("::1")
+        val server = ServerSocket(0, 50, loop)
+        val received = ByteArrayOutputStream()
+        val lock = Object()
+        val serverThread = thread(name = "test-upstream-v6") {
+            try {
+                val s = server.accept()
+                s.tcpNoDelay = true
+                val ins = s.getInputStream()
+                val buf = ByteArray(4096)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    synchronized(lock) {
+                        received.write(buf, 0, n)
+                        lock.notifyAll()
+                    }
+                    if (received.toString("UTF-8").contains("\r\n\r\n")) break
+                }
+                s.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".toByteArray())
+                s.getOutputStream().flush()
+                Thread.sleep(1200)
+                s.close()
+            } catch (_: Throwable) {
+            }
+        }
+
+        try {
+            val stack = TcpStack(
+                writer = writer,
+                protector = protector,
+                scope = scope,
+                configProvider = { config },
+                listsProvider = { HostListStore.Snapshot.EMPTY }
+            )
+            val client6 = InetAddress.getByName("fd00:zapr::7".replace("zapr", "aa"))
+            val port = server.localPort
+            val clientPort = 41100
+            val clientIsn = 5000
+
+            feed(stack, clientTcp6(client6, loop, clientPort, port, clientIsn, 0, TcpFlag.SYN, options = synOptions))
+            val synAck = awaitPacket { p ->
+                val ip = parseIp(p, p.size) ?: return@awaitPacket false
+                val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return@awaitPacket false
+                seg.isSynAck && seg.dstPort == clientPort
+            }
+            assertChecksumsValid(synAck)
+            val saIp = parseIp(synAck, synAck.size)!!
+            assertTrue("SYN-ACK должен быть IPv6", saIp.src.address.size == 16)
+            val sa = parseTcp(synAck, saIp.payloadOffset, saIp.payloadLength)!!
+            val serverIsn = sa.seq
+
+            feed(stack, clientTcp6(client6, loop, clientPort, port, clientIsn + 1, serverIsn + 1, TcpFlag.ACK))
+            val request = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".toByteArray()
+            feed(
+                stack,
+                clientTcp6(client6, loop, clientPort, port, clientIsn + 1, serverIsn + 1, TcpFlag.ACK or TcpFlag.PSH, payload = request)
+            )
+
+            synchronized(lock) {
+                var waited = 0L
+                while (received.size() < request.size && waited < 8000) {
+                    lock.wait(50)
+                    waited += 50
+                }
+            }
+            assertArrayEquals("IPv6: запрос дошёл до сервера искажённым", request, received.toByteArray())
+
+            val down = ByteArrayOutputStream()
+            val deadline = System.currentTimeMillis() + 8000
+            while (down.size() < 5 && System.currentTimeMillis() < deadline) {
+                for (p in packets.toList()) {
+                    val ip = parseIp(p, p.size) ?: continue
+                    val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: continue
+                    if (seg.dstPort == clientPort && !seg.isSynAck && seg.payloadLength > 0) {
+                        assertChecksumsValid(p)
+                        down.write(p, ip.payloadOffset + seg.headerLen, seg.payloadLength)
+                        packets.remove(p)
+                    }
+                }
+                Thread.sleep(10)
+            }
+            val body = down.toString("UTF-8")
+            assertTrue("IPv6: ответ сервера не дошёл до клиента («${body.take(48)}»)", body.startsWith("HTTP/1.1 200 OK"))
+            assertTrue("IPv6: тело ответа потеряно", body.contains("hello"))
+            serverThread.join(3000)
+        } finally {
+            runCatching { server.close() }
+        }
+    }
+
+    /**
      * Зонд автоподбора отправляет синтетический TLS ClientHello. Если наш же
      * парсер не найдёт в нём SNI, то split по «середине SNI» не применится и
      * подбор будет измерять совсем не то, что нужно.
@@ -169,6 +267,41 @@ class TcpRelayTest {
     }
 
     /** Пакет клиента IPv4+TCP с корректной контрольной суммой. */
+    /** IPv6-вариант клиентского сегмента: 40-байтный заголовок + TCP. */
+    private fun clientTcp6(
+        src: InetAddress,
+        dst: InetAddress,
+        srcPort: Int,
+        dstPort: Int,
+        seq: Int,
+        ack: Int,
+        flags: Int,
+        options: ByteArray? = null,
+        payload: ByteArray = ByteArray(0)
+    ): ByteArray {
+        val tcpHeaderLen = 20 + (options?.size ?: 0)
+        val p = Pkt()
+        p.u8(0x60); p.u8(0); p.u8(0); p.u8(0)
+        p.u16(tcpHeaderLen + payload.size)
+        p.u8(6)
+        p.u8(64)
+        p.bytes(src.address)
+        p.bytes(dst.address)
+        p.u16(srcPort); p.u16(dstPort)
+        p.u32(seq); p.u32(ack)
+        p.u8(((tcpHeaderLen / 4) shl 4) and 0xF0)
+        p.u8(flags and 0xFF)
+        p.u16(65535)
+        p.u16(0); p.u16(0)
+        if (options != null) p.bytes(options)
+        p.bytes(payload)
+        val bytes = p.b.toByteArray()
+        val cs = referenceChecksum(src, dst, 6, bytes.copyOfRange(40, bytes.size))
+        bytes[56] = (cs ushr 8 and 0xFF).toByte()
+        bytes[57] = (cs and 0xFF).toByte()
+        return bytes
+    }
+
     private fun clientTcp(
         dst: InetAddress,
         srcPort: Int,

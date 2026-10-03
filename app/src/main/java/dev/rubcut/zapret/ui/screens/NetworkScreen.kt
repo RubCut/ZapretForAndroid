@@ -77,8 +77,8 @@ fun NetworkScreen(vm: AppViewModel, navController: NavHostController) {
 
     if (picking) {
         AppPicker(
-            selected = cfg.appPackages.toSet(),
-            onDone = { set -> vm.update { it.copy(appPackages = set.toList()) }; picking = false },
+            selected = cfg.appPackages,
+            onDone = { set -> vm.update { it.copy(appPackages = set) }; picking = false },
             onCancel = { picking = false }
         )
         return

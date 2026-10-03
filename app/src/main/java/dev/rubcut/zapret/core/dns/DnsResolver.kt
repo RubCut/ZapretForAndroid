@@ -246,7 +246,7 @@ class DnsResolver(
             val addr = IpLiterals.parse(hp.first) ?: continue
             out += InetSocketAddress(addr, hp.second)
         }
-        if (out.isEmpty()) return FALLBACK_SERVERS
+        if (out.isEmpty()) return FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
         return out
     }
 
@@ -367,7 +367,7 @@ class DnsResolver(
 
             val body: ByteArray = when {
                 headers["content-length"]?.toIntOrNull() != null -> {
-                    readFixed(inp, headers["content-length"]!!.toInt())
+                    readFixed(inp, headers["content-length"]!!.toInt()) ?: return null
                 }
                 headers["transfer-encoding"]?.contains("chunked", true) == true -> readChunked(inp)
                 else -> {

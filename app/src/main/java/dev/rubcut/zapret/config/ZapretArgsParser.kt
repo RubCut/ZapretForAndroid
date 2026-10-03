@@ -185,7 +185,7 @@ object ZapretArgsParser {
                 }
                 k == "--dpi-desync-split-pos" -> {
                     val parsed = parseSplitPos(value.orEmpty(), base.splitCustomPos)
-                    curPositions = parsed.first.toMutableList()
+                    curPositions = ArrayList(parsed.first)
                     curCustomPos = parsed.second
                     if (parsed.first.isNotEmpty()) supported += "--dpi-desync-split-pos=$value" else errors += "не разобрал --dpi-desync-split-pos=$value"
                 }

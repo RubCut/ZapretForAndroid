@@ -78,7 +78,7 @@ class Checksum {
             carry = -1
         }
         while ((sum ushr 16) != 0L) sum = (sum and 0xFFFFL) + (sum ushr 16)
-        return (sum.inv() and 0xFFFF)
+        return (sum.inv() and 0xFFFF).toInt()
     }
 }
 

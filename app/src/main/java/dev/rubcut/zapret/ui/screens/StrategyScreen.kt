@@ -112,7 +112,7 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
         RuleEditor(
             rule = editing!!,
             onSave = { vm.upsertRule(it); editing = null },
-            onDelete = { vm.deleteRule(it.id); editing = null },
+            onDelete = { editing?.let { r -> vm.deleteRule(r.id) }; editing = null },
             onCancel = { editing = null }
         )
         return

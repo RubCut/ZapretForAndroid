@@ -467,9 +467,14 @@ object PacketBuilder {
             cs.updateU16(0)
             cs.updateU16(proto and 0xFF)
         } else {
+            // Псевдозаголовок IPv4: 4 байта src + 4 байта dst + нулевой байт +
+            // байт протокола + 2 байта длины. То есть протокол и длина — это ДВА
+            // отдельных 16-битных слова; упаковка их в одно давала неверную сумму
+            // у каждого исходящего пакета, и ядро молча их выбрасывало.
             cs.update(src.address, 0, 4)
             cs.update(dst.address, 0, 4)
-            cs.updateU16((proto shl 8) or (segLen and 0xFFFF))
+            cs.updateU16(proto and 0xFF)
+            cs.updateU16(segLen and 0xFFFF)
         }
         cs.update(segment, segOff, segLen)
         return cs.value()

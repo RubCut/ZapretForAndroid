@@ -320,6 +320,28 @@ class DnsResolver(
         return null
     }
 
+    /* ---------------------------------------------------------------- */
+    /*  Диагностика                                                      */
+    /* ---------------------------------------------------------------- */
+
+    private fun describe(r: DnsResult): String = when (r) {
+        is DnsResult.Addresses -> if (r.list.isEmpty()) "пусто" else r.list.joinToString(",") { it.hostAddress ?: "?" }
+        is DnsResult.Blocked -> "заблокировано"
+        is DnsResult.Failed -> "сбой: ${r.reason}"
+    }
+
+    /** Защищённый UDP-запрос напрямую на публичные серверы, минуя весь наш стек. */
+    fun diagProtectedUdp(name: String): String = try {
+        val servers = FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
+        describe(viaUdp(configProvider(), name, DnsType.A, servers, "diag"))
+    } catch (e: Exception) {
+        "исключение: ${e.message}"
+    }
+
+    fun diagBootstrap(host: String): String = bootstrapResolve(host)?.hostAddress ?: "не определён"
+
+    suspend fun diagLookup(name: String, type: Int = DnsType.A): String = describe(lookup(name, type))
+
     fun clearCache() {
         synchronized(cache) { cache.clear() }
     }

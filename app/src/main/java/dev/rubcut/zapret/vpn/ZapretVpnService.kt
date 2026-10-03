@@ -75,6 +75,7 @@ class ZapretVpnService : VpnService() {
          * операторов MTU 1400–1440, и пакеты по 1500 молча теряются.
          */
         const val CELLULAR_SAFE_MTU = 1400
+        const val MAX_RECONNECTS = 3
 
         const val VPN_ADDR_V4 = "10.211.0.1"
         const val DNS_ADDR_V4 = "10.211.0.2"
@@ -133,7 +134,36 @@ class ZapretVpnService : VpnService() {
 
     override fun onRevoke() {
         LogManager.w("Система отозвала VPN")
-        stopEverything("отозван системой")
+        // Некоторые оболочки отзывают VPN «на всякий случай» (смена сети,
+        // агрессивный менеджер энергии). Раз пользователь VPN не выключал,
+        // пробуем поднять туннель обратно, а не оставляем телефон без обхода.
+        val cfg = AppGraph.config.current
+        if (!userStopped && reconnectAttempts < MAX_RECONNECTS && cfg.profile != ProfileId.OFF) {
+            reconnectAttempts++
+            LogManager.i(LogTag.VPN, "Туннель отозван системой — поднимаю заново (попытка $reconnectAttempts)")
+            running = false
+            teardown()
+            AppGraph.scope.launch {
+                delay(1200L * reconnectAttempts)
+                withContext(Dispatchers.Main) {
+                    try {
+                        if (prepare(this@ZapretVpnService) == null) {
+                            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                            TrafficStats.reset()
+                            ReverseHostCache.clear()
+                            establish(AppGraph.config.current)
+                        } else {
+                            LogManager.w("Разрешение на VPN отозвано — автопереподключение невозможно")
+                            stopEverything("отозван системой")
+                        }
+                    } catch (e: Exception) {
+                        fail(e.message ?: "reconnect failed")
+                    }
+                }
+            }
+        } else {
+            stopEverything("отозван системой")
+        }
     }
 
     override fun onDestroy() {
@@ -181,6 +211,11 @@ class ZapretVpnService : VpnService() {
     /** Ограничение MTU, вычисленное по физической сети при подъёме туннеля. */
     @Volatile
     private var mtuCap: Int = Int.MAX_VALUE
+
+    private var reconnectAttempts = 0
+
+    @Volatile
+    private var userStopped = false
 
     /**
      * Конфигурация для потоков туннеля: та же, что в репозитории, но с MTU,
@@ -284,6 +319,8 @@ class ZapretVpnService : VpnService() {
 
         tunnelSignature = signature(cfg)
         running = true
+        reconnectAttempts = 0
+        userStopped = false
         instance = this
         VpnController.markRunning()
 
@@ -291,11 +328,37 @@ class ZapretVpnService : VpnService() {
         startReader()
         startConfigWatcher()
         startNotificationTicker()
+        selfTest()
 
         LogManager.i(
             LogTag.VPN,
-            "Туннель поднят: ${if (hasV4) "IPv4 " else ""}${if (hasV6) "IPv6" else ""} · MTU ${cfg.mtu} · профиль ${profileName(cfg.profile)}"
+            "Туннель поднят: ${if (hasV4) "IPv4 " else ""}${if (hasV6) "IPv6" else ""} · MTU ${cfg.mtu} · DNS ${cfg.dnsMode} · профиль ${profileName(cfg.profile)}"
         )
+    }
+
+    /**
+     * Короткая самопроверка сразу после подъёма туннеля. Её результат пишется в
+     * журнал обычным (не подробным) уровнем, поэтому по одному скриншоту видно,
+     * на каком именно звене рвётся цепочка: защищённый сокет, определение адреса
+     * DoH-сервера или полное разрешение имён.
+     */
+    private fun selfTest() {
+        val resolver = dnsHandler?.resolver ?: return
+        scope?.launch(Dispatchers.IO) {
+            delay(700)
+            val cfg = AppGraph.config.current
+            val host = when (cfg.dnsMode) {
+                DnsMode.DOH -> cfg.dohUrl.substringAfter("://").substringBefore('/').substringBefore(':')
+                DnsMode.DOT -> cfg.dotHost.substringBefore(':')
+                else -> null
+            }
+            LogManager.i(LogTag.DNS, "Самопроверка · режим ${cfg.dnsMode}" + (if (host != null) ", сервер $host" else ""))
+            LogManager.i(LogTag.DNS, "Самопроверка · защищённый UDP 1.1.1.1/8.8.8.8: ${resolver.diagProtectedUdp("www.google.com")}")
+            if (host != null) {
+                LogManager.i(LogTag.DNS, "Самопроверка · адрес сервера $host: ${resolver.diagBootstrap(host)}")
+            }
+            LogManager.i(LogTag.DNS, "Самопроверка · lookup www.google.com: ${resolver.diagLookup("www.google.com")}")
+        }
     }
 
     /** MTU, который реально выдержит нижележащая сеть, с запасом для сотовых. */
@@ -498,6 +561,7 @@ class ZapretVpnService : VpnService() {
     /* ------------------------------------------------------------ */
 
     private fun stopEverything(reason: String) {
+        if (reason == "по запросу пользователя") userStopped = true
         if (!running && pfd == null && scope == null) {
             VpnController.markStopped()
             return

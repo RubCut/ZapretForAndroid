@@ -55,6 +55,46 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 splitDelayMs = 40
             )
         )
+
+            /**
+             * Минимальный TLS ClientHello с SNI. Вынесен в компаньон: его же
+             * проверяет JVM-тест — если наш парсер не найдёт здесь SNI, то и
+             * split по «середине SNI» работать не будет.
+             */
+            fun clientHelloFor(host: String): ByteArray {
+            val name = host.toByteArray(Charsets.US_ASCII)
+            val ext = ByteArrayOutputStream()
+            ext.write(0); ext.write(0)                                  // server_name
+            val sniInner = 2 + 1 + 2 + name.size                        // list len + type + name len + name
+            ext.write((sniInner ushr 8) and 0xFF); ext.write(sniInner and 0xFF)
+            ext.write((sniInner - 2) ushr 8 and 0xFF); ext.write((sniInner - 2) and 0xFF)
+            ext.write(0)
+            ext.write((name.size ushr 8) and 0xFF); ext.write(name.size and 0xFF)
+            ext.write(name)
+
+            val body = ByteArrayOutputStream()
+            body.write(3); body.write(3)                                // TLS 1.2
+            body.write(ByteArray(32) { 7 })                             // random
+            body.write(0)                                               // session id
+            body.write(0); body.write(2); body.write(0x13); body.write(0x01)   // cipher suites
+            body.write(1); body.write(0)                                // compression
+            body.write((ext.size() ushr 8) and 0xFF); body.write(ext.size() and 0xFF)
+            body.write(ext.toByteArray())
+            val bodyBytes = body.toByteArray()
+            val hs = ByteArrayOutputStream()
+            hs.write(1)                                                 // client_hello
+            hs.write((bodyBytes.size ushr 16) and 0xFF)
+            hs.write((bodyBytes.size ushr 8) and 0xFF)
+            hs.write(bodyBytes.size and 0xFF)
+            hs.write(bodyBytes)
+            val hsBytes = hs.toByteArray()
+
+            val rec = ByteArrayOutputStream()
+            rec.write(0x16); rec.write(3); rec.write(1)
+            rec.write((hsBytes.size ushr 8) and 0xFF); rec.write(hsBytes.size and 0xFF)
+            rec.write(hsBytes)
+            return rec.toByteArray()
+        }
     }
 
     /**
@@ -109,7 +149,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             val serverIsn = sa.seq
 
             feed(clientTcp(addr, clientPort, port, clientIsn + 1, serverIsn + 1, TcpFlag.ACK))
-            val hello = clientHello(host)
+            val hello = clientHelloFor(host)
             feed(
                 clientTcp(
                     addr, clientPort, port, clientIsn + 1, serverIsn + 1,
@@ -227,39 +267,4 @@ class StrategyAutopilot(private val stack: TcpStack) {
         return (sum.inv() and 0xFFFF).toInt()
     }
 
-    /** Минимальный TLS ClientHello с SNI — ровно то, на что смотрит DPI. */
-    private fun clientHello(host: String): ByteArray {
-        val name = host.toByteArray(Charsets.US_ASCII)
-        val ext = ByteArrayOutputStream()
-        ext.write(0); ext.write(0)                                  // server_name
-        val sniInner = 2 + 1 + 2 + name.size                        // list len + type + name len + name
-        ext.write((sniInner ushr 8) and 0xFF); ext.write(sniInner and 0xFF)
-        ext.write((sniInner - 2) ushr 8 and 0xFF); ext.write((sniInner - 2) and 0xFF)
-        ext.write(0)
-        ext.write((name.size ushr 8) and 0xFF); ext.write(name.size and 0xFF)
-        ext.write(name)
-
-        val body = ByteArrayOutputStream()
-        body.write(3); body.write(3)                                // TLS 1.2
-        body.write(ByteArray(32) { 7 })                             // random
-        body.write(0)                                               // session id
-        body.write(0); body.write(2); body.write(0x13); body.write(0x01)   // cipher suites
-        body.write(1); body.write(0)                                // compression
-        body.write((ext.size() ushr 8) and 0xFF); body.write(ext.size() and 0xFF)
-        body.write(ext.toByteArray())
-        val bodyBytes = body.toByteArray()
-        val hs = ByteArrayOutputStream()
-        hs.write(1)                                                 // client_hello
-        hs.write((bodyBytes.size ushr 16) and 0xFF)
-        hs.write((bodyBytes.size ushr 8) and 0xFF)
-        hs.write(bodyBytes.size and 0xFF)
-        hs.write(bodyBytes)
-        val hsBytes = hs.toByteArray()
-
-        val rec = ByteArrayOutputStream()
-        rec.write(0x16); rec.write(3); rec.write(1)
-        rec.write((hsBytes.size ushr 8) and 0xFF); rec.write(hsBytes.size and 0xFF)
-        rec.write(hsBytes)
-        return rec.toByteArray()
-    }
 }

@@ -10,7 +10,9 @@ import dev.rubcut.zapret.core.net.getU16
 import dev.rubcut.zapret.core.net.parseIp
 import dev.rubcut.zapret.core.net.parseTcp
 import dev.rubcut.zapret.core.net.parseUdp
+import dev.rubcut.zapret.core.proto.Tls
 import dev.rubcut.zapret.core.stack.PacketWriter
+import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.core.stack.TcpStack
 import dev.rubcut.zapret.core.stack.UdpStack
 import dev.rubcut.zapret.data.AppConfig
@@ -89,6 +91,22 @@ class TcpRelayTest {
     }
 
     /** Эталонная контрольная сумма TCP/UDP, написанная независимо от боевого кода. */
+    /**
+     * Зонд автоподбора отправляет синтетический TLS ClientHello. Если наш же
+     * парсер не найдёт в нём SNI, то split по «середине SNI» не применится и
+     * подбор будет измерять совсем не то, что нужно.
+     */
+    @Test
+    fun autopilotProbeHelloIsParseable() {
+        val host = "www.youtube.com"
+        val hello = StrategyAutopilot.clientHelloFor(host)
+        val info = Tls.parseClientHello(hello, 0, hello.size)
+        assertNotNull("синтетический ClientHello не распознан", info)
+        assertEquals(host, info!!.sni)
+        assertTrue("SNI вне границ записи", info.sniStart >= 0 && info.sniEnd <= hello.size)
+        assertEquals(hello.size, info.recordLength)
+    }
+
     private fun referenceChecksum(src: InetAddress, dst: InetAddress, proto: Int, segment: ByteArray): Int {
         val pseudo = ByteArrayOutputStream()
         pseudo.write(src.address)

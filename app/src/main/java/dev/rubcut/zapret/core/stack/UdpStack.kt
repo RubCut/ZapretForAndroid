@@ -142,6 +142,13 @@ class UdpStack(
         @Volatile
         private var closed = false
 
+        /**
+         * Пакеты, пришедшие до готовности сокета. Раньше первый пакет сессии
+         * молча терялся (`socket ?: return`), а для DNS это единственный пакет
+         * запроса: ответ не приходил никогда и запрос отваливался по таймауту.
+         */
+        private val pending = ArrayDeque<ByteArray>()
+
         fun touch() { lastSeen = System.currentTimeMillis() }
 
         fun start() {
@@ -153,6 +160,19 @@ class UdpStack(
                     sock.soTimeout = 0
                     sock.connect(InetSocketAddress(key.dst, key.dstPort))
                     socket = sock
+                    val queued = synchronized(this) {
+                        val l = pending.toList()
+                        pending.clear()
+                        l
+                    }
+                    for (d in queued) {
+                        try {
+                            sock.send(DatagramPacket(d, d.size))
+                            TrafficStats.up(d.size)
+                        } catch (e: Exception) {
+                            LogManager.d(LogTag.UDP, "UDP flush ${key.dst}:${key.dstPort}: ${e.message}")
+                        }
+                    }
                     val buf = ByteArray(64 * 1024)
                     while (scope.isActive && !closed) {
                         val packet = DatagramPacket(buf, buf.size)
@@ -195,7 +215,17 @@ class UdpStack(
         }
 
         fun sendUpstream(data: ByteArray) {
-            val sock = socket ?: return
+            val sock = socket
+            if (sock == null) {
+                synchronized(this) {
+                    if (pending.size < MAX_PENDING) {
+                        pending.addLast(data)
+                    } else {
+                        TrafficStats.dropped()
+                    }
+                }
+                return
+            }
             try {
                 sock.send(DatagramPacket(data, data.size))
                 TrafficStats.up(data.size)
@@ -215,5 +245,6 @@ class UdpStack(
 
     private companion object {
         const val MAX_SESSIONS = 256
+        const val MAX_PENDING = 8
     }
 }

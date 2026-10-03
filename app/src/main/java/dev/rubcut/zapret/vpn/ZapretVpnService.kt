@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -102,14 +104,102 @@ class ZapretVpnService : VpnService() {
     private var tunnelSignature: String = ""
 
     val protector = object : SocketProtector {
-        override fun protect(socket: Socket): Boolean =
-            try { this@ZapretVpnService.protect(socket) } catch (e: Exception) { false }
+        override fun protect(socket: Socket): Boolean {
+            val bound = bindToUnderlying(socket)
+            val prot = try { this@ZapretVpnService.protect(socket) } catch (e: Exception) { false }
+            reportIsolation(bound, prot)
+            return bound || prot
+        }
 
-        override fun protect(socket: DatagramSocket): Boolean =
-            try { this@ZapretVpnService.protect(socket) } catch (e: Exception) { false }
+        override fun protect(socket: DatagramSocket): Boolean {
+            val bound = bindToUnderlying(socket)
+            val prot = try { this@ZapretVpnService.protect(socket) } catch (e: Exception) { false }
+            reportIsolation(bound, prot)
+            return bound || prot
+        }
 
         override fun protect(fd: Int): Boolean =
             try { this@ZapretVpnService.protect(fd) } catch (e: Exception) { false }
+    }
+
+    /**
+     * Привязка сокета к физической сети напрямую, в дополнение к [protect].
+     *
+     * Держать изоляцию только на protect() опасно: его отказ означал бы, что
+     * наши же upstream-сокеты уходят в наш туннель и терминируются нами же
+     * рекурсивно — трафик вставал бы намертво, снаружи это выглядит как
+     * «интернета нет совсем». Сокет, привязанный к сети с
+     * NET_CAPABILITY_NOT_VPN, попасть в туннель физически не может.
+     */
+    private fun bindToUnderlying(socket: Socket): Boolean {
+        val n = underlyingNetwork ?: return false
+        return try {
+            n.bindSocket(socket)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun bindToUnderlying(socket: DatagramSocket): Boolean {
+        val n = underlyingNetwork ?: return false
+        return try {
+            n.bindSocket(socket)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun reportIsolation(bound: Boolean, prot: Boolean) {
+        if (isolationReported) return
+        isolationReported = true
+        LogManager.i(LogTag.VPN, "Изоляция upstream-сокетов: привязка к физической сети=$bound, protect=$prot")
+        if (!bound && !prot) {
+            LogManager.w("Upstream-сокеты НЕ изолированы от туннеля — возможен самозахват трафика")
+        }
+    }
+
+    /** Физическая сеть (не VPN), к которой привязываются upstream-сокеты. */
+    @Volatile
+    private var underlyingNetwork: Network? = null
+
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var isolationReported = false
+
+    private fun watchUnderlyingNetwork() {
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val req = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    underlyingNetwork = network
+                }
+
+                override fun onLost(network: Network) {
+                    if (underlyingNetwork == network) underlyingNetwork = null
+                }
+            }
+            cm.registerNetworkCallback(req, cb)
+            netCallback = cb
+        } catch (e: Exception) {
+            LogManager.w("Не удалось подписаться на физическую сеть: ${e.message}")
+        }
+    }
+
+    private fun unwatchUnderlyingNetwork() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        try {
+            netCallback?.let { cm?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {
+        }
+        netCallback = null
+        underlyingNetwork = null
     }
 
     override fun onCreate() {
@@ -285,6 +375,9 @@ class ZapretVpnService : VpnService() {
         if (!hasV4 && !hasV6) throw IllegalStateException("не удалось назначить адрес туннелю")
 
         applyAppScope(builder, cfg)
+
+        watchUnderlyingNetwork()
+        isolationReported = false
 
         val fd = builder.establish() ?: throw IllegalStateException("establish() вернул null")
         pfd = fd
@@ -615,6 +708,7 @@ class ZapretVpnService : VpnService() {
     }
 
     private fun teardown() {
+        unwatchUnderlyingNetwork()
         configJob?.cancel(); configJob = null
         notifJob?.cancel(); notifJob = null
         try { readerThread?.interrupt() } catch (_: Exception) {}

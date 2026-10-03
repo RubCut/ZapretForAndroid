@@ -42,6 +42,7 @@ class DnsHandler(
     )
 
     private val inFlight = AtomicInteger()
+    private val successReported = AtomicInteger()
 
     /** Возвращает true, если пакет обработан как DNS и дальше его передавать не нужно. */
     fun handle(ip: IpHeader, dgram: UdpDatagram): Boolean {
@@ -91,7 +92,11 @@ class DnsHandler(
                     send(DnsMessage.buildEmptyResponse(query, RCODE_SERVFAIL))
                 } else {
                     send(response)
-                    LogManager.d(LogTag.DNS, "DNS ← ${query.name} (${response.size} байт)")
+                    if (successReported.getAndIncrement() == 0) {
+                        LogManager.i(LogTag.DNS, "DNS отвечает: ${query.name} (${response.size} байт)")
+                    } else {
+                        LogManager.d(LogTag.DNS, "DNS ← ${query.name} (${response.size} байт)")
+                    }
                 }
             } catch (e: Exception) {
                 LogManager.w("DNS: сбой обработки ${query.name}: ${e.message}")

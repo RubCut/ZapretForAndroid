@@ -87,6 +87,11 @@ class TcpStack(
 
     val activeCount: Int get() = connections.size
 
+    /** Сколько соединений уже продиагностировано в журнал обычным уровнем. */
+    private val diagCounter = AtomicInteger()
+
+    fun nextDiagSlot(): Int = diagCounter.incrementAndGet()
+
     @Volatile
     var dnsRedirect: java.net.InetAddress? = null
 

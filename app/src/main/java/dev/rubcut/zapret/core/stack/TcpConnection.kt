@@ -154,8 +154,19 @@ class TcpConnection(
 
     private suspend fun runConnection() {
         var socket: Socket? = null
+        // Первые несколько соединений пишем обычным уровнем: по журналу сразу
+        // видно, доходит ли дело до upstream-сокета и что именно его рвёт.
+        val slot = stack.nextDiagSlot()
+        val verboseSlot = slot <= 5
+        val t0 = android.os.SystemClock.elapsedRealtime()
         try {
             socket = openUpstream()
+            if (verboseSlot) {
+                LogManager.i(
+                    LogTag.TCP,
+                    "TCP #$slot → ${upstreamAddr.hostAddress}:$serverPort открыт за ${android.os.SystemClock.elapsedRealtime() - t0} мс"
+                )
+            }
             upstream = socket
             val pumpUp = launchPumpToUpstream(socket)
             val pumpDown = launchPumpFromUpstream(socket)
@@ -164,7 +175,8 @@ class TcpConnection(
             gracefulClose()
         } catch (e: Exception) {
             if (!closed) {
-                LogManager.d(LogTag.TCP, "upstream $description: ${e.javaClass.simpleName}: ${e.message}")
+                val msg = "upstream $description: ${e.javaClass.simpleName}: ${e.message}"
+                if (verboseSlot) LogManager.i(LogTag.TCP, "TCP #$slot · ОШИБКА · $msg") else LogManager.d(LogTag.TCP, msg)
                 sendReset()
             }
             close()

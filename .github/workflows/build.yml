@@ -66,7 +66,37 @@ jobs:
       - name: Run JVM integration tests
         id: test
         continue-on-error: true
-        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest --console=plain 2>&1 | tee test.log
+        run: |
+          # Демоны Gradle на раннере изредка умирают при старте (error code 0) —
+          # это инфраструктурный глюк, поэтому шаг повторяется до трёх раз,
+          # если причина падения именно в демоне, а не в тестах.
+          ok=0
+          for attempt in 1 2 3; do
+            if ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain 2>&1 | tee test.log; then
+              ok=1
+              break
+            fi
+            grep -q "daemon has terminated unexpectedly" test.log || break
+            echo "=== попытка $attempt: демон Gradle умер при старте, повторяю ===" | tee -a test.log
+            sleep 5
+          done
+          # Выжимка результатов в конец лога: аннотации читают хвост, а полный
+          # стектрейсJUnit состоит из строк «at …», которые вырезаются как шум.
+          if [ -d app/build/test-results/testDebugUnitTest ]; then
+            python3 - <<'PYEOF' >> test.log
+          import glob, xml.etree.ElementTree as ET
+          for f in sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml')):
+              r = ET.parse(f).getroot()
+              print("TESTSUMMARY %s: tests=%s failures=%s errors=%s skipped=%s" % (
+                  r.get('name'), r.get('tests'), r.get('failures'), r.get('errors'), r.get('skipped')))
+              for tc in r.iter('testcase'):
+                  for fail in list(tc.iter('failure')) + list(tc.iter('error')):
+                      print("TESTFAIL %s.%s: %s" % (tc.get('classname'), tc.get('name'), (fail.get('message') or '')[:400]))
+                      txt = (fail.text or '').strip().splitlines()
+                      print("\n".join(txt[:12]))
+          PYEOF
+          fi
+          [ "$ok" -eq 1 ]
 
       - name: Build release APK (signed, minified)
         id: release

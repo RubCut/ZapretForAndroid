@@ -1,0 +1,282 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Release + debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # pipefail обязателен: gradle пишется в tee, и без него шаг всегда «зелёный».
+    env:
+      GIT_SHA: ${{ github.sha }}
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # Android SDK уже есть в образе ubuntu-latest, лицензии приняты —
+      # недостающие platform/build-tools AGP докачает сам.
+      - name: Inspect Android SDK
+        run: |
+          {
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            java -version 2>&1
+            ls "$ANDROID_HOME" || true
+            echo "-- platforms --"; ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+            echo "-- build-tools --"; ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+          } 2>&1 | tee sdk-info.txt
+          SM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1)
+          if [ -n "$SM" ]; then yes | "$SM" --licenses > /dev/null 2>&1 || true; fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      # Gradle Wrapper (gradlew, gradle-wrapper.jar) — бинарный, поэтому в git
+      # не лежит. Генерируем на месте: после этого сборка идёт через ./gradlew,
+      # а артефакт gradle-wrapper можно распаковать в локальный клон.
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.9 --distribution-type bin 2>&1 | tee wrapper.log
+
+      # Интеграционные тесты стека на JVM: полное TCP-соединение через TcpStack,
+      # UDP-релей, контрольные суммы независимым эталоном, кодек DNS.
+      # Падают раньше сборки APK и сразу показывают поломку пакетного тракта.
+      - name: Run JVM integration tests
+        id: test
+        continue-on-error: true
+        run: |
+          run_tests() {
+            echo "=== попытка $1 · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee -a test.log
+            set +e
+            ./gradlew --no-daemon --max-workers=2 --stacktrace :app:testDebugUnitTest --console=plain >> test.log 2>&1
+            rc=$?
+            set -e
+            echo "GRADLE_RC=$rc" | tee -a test.log
+            return $rc
+          }
+          : > test.log
+          rc=0
+          for attempt in 1 2 3; do
+            run_tests "$attempt" && { rc=0; break; } || rc=$?
+            # Настоящий вердикт (успех или падение тестов) повторя не требует.
+            grep -qE "BUILD (SUCCESSFUL|FAILED)" test.log && break
+            echo "=== сборщик умер без вердикта (rc=$rc), повторяю ===" | tee -a test.log
+            pkill -f KotlinCompileDaemon || true
+            pkill -f GradleDaemon || true
+            sleep 5
+          done
+          # Выжимка JUnit в конец лога и ОТДЕЛЬНОЙ аннотацией: хвосты логов
+          # нередко обрезаются, а вердикт тестов нужен всегда.
+          if [ -d app/build/test-results/testDebugUnitTest ]; then
+            python3 - <<'PYEOF' >> test.log
+          import glob, xml.etree.ElementTree as ET
+          for f in sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml')):
+              r = ET.parse(f).getroot()
+              print("TESTSUMMARY %s: tests=%s failures=%s errors=%s skipped=%s" % (
+                  r.get('name'), r.get('tests'), r.get('failures'), r.get('errors'), r.get('skipped')))
+              for tc in r.iter('testcase'):
+                  for fail in list(tc.iter('failure')) + list(tc.iter('error')):
+                      print("TESTFAIL %s.%s: %s" % (tc.get('classname'), tc.get('name'), (fail.get('message') or '')[:400]))
+                      txt = (fail.text or '').strip().splitlines()
+                      print("\n".join(txt[:12]))
+          PYEOF
+          fi
+          python3 - <<'PYEOF'
+          import re, sys
+          lines = []
+          try:
+              raw = open('test.log', encoding='utf-8', errors='replace').read()
+          except OSError:
+              raw = ''
+          for l in raw.splitlines():
+              if 'TESTSUMMARY' in l or 'TESTFAIL' in l or l.startswith('GRADLE_RC=') or 'попытка' in l or 'умер без вердикта' in l:
+                  lines.append(l)
+          body = "\n".join(lines) or 'test.log пуст или вердиктов нет'
+          esc = body.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          rc = 0
+          m = re.search(r'GRADLE_RC=(\d+)[^\d]*$', raw.strip())
+          if m:
+              rc = int(m.group(1))
+          has_fail = 'TESTFAIL' in raw or 'failures=[1-9]' in raw
+          level = 'error' if (rc != 0 or has_fail) else 'notice'
+          print("::%s title=TESTS::%s" % (level, esc))
+          PYEOF
+          exit $rc
+      - name: Build release APK (signed, minified)
+        id: release
+        continue-on-error: true
+        run: |
+          gradle_retry() {
+            local log="$1"; shift
+            local attempt ok=0
+            for attempt in 1 2 3; do
+              echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+              pkill -f KotlinCompileDaemon || true
+              pkill -f GradleDaemon || true
+              sleep 5
+            done
+            return $((1 - ok))
+          }
+          gradle_retry build-release.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease
+
+      - name: Build debug APK
+        id: debug
+        if: steps.release.outcome == 'success'
+        continue-on-error: true
+        run: |
+          gradle_retry() {
+            local log="$1"; shift
+            local attempt ok=0
+            for attempt in 1 2 3; do
+              echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
+              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
+              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
+              pkill -f KotlinCompileDaemon || true
+              pkill -f GradleDaemon || true
+              sleep 5
+            done
+            return $((1 - ok))
+          }
+          gradle_retry build-debug.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug
+
+      # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции и
+      # тестов дублируются аннотациями checks API — они читаются через api.github.com.
+      - name: Surface build errors as annotations
+        if: steps.release.outcome == 'failure' || steps.debug.outcome == 'failure' || steps.test.outcome == 'failure'
+        run: |
+          python3 - <<'PY'
+          import os, re
+
+          # Стектрейс Gradle занимает тысячи строк и топит настоящую причину,
+          # а скачать лог сессии из внешнего окружения часто нельзя — поэтому
+          # шум вырезается, а остаток публикуется аннотациями checks API.
+          NOISE = re.compile(
+              r'^\s*(at\s|\.\.\.\s|\d+ more\s|Caused by: java\.io)'
+              r'|^\s*(org\.gradle|java\.base|jdk\.internal|sun\.nio|com\.android\.build\.gradle\.internal)'
+              r'|^\s*$'
+              r'|^Deprecated Gradle features'
+              r'|^\s*> Run with --'
+          )
+
+          def clean(path):
+              if not os.path.exists(path):
+                  return None
+              lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+              kept = [l.rstrip() for l in lines if not NOISE.search(l)]
+              # Ошибки компилятора Kotlin и вердикты тестов — самое ценное.
+              hot = [l for l in kept if l.startswith('e: ') or 'TESTFAIL' in l or 'TESTSUMMARY' in l]
+              tail = kept[-220:]
+              body = ("\n".join(hot[:120]) + "\n---- context ----\n" + "\n".join(tail)) if hot \
+                     else "\n".join(tail)
+              return body
+
+          def emit(label, body):
+              # Одна аннотация ограничена 64 КБ; режем на куски, чтобы влезло всё важное.
+              chunks = [body[i:i + 20000] for i in range(0, len(body), 20000)][:4]
+              for n, c in enumerate(chunks, 1):
+                  esc = c.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print("::error title=%s build failed (%d/%d)::%s" % (label, n, len(chunks), esc))
+
+          for label, path in (("release", "build-release.log"), ("debug", "build-debug.log"), ("test", "test.log")):
+              body = clean(path)
+              if body:
+                  emit(label, body)
+          PY
+          exit 1
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            sdk-info.txt
+            wrapper.log
+            build-release.log
+            build-debug.log
+            test.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Report signing
+        if: steps.release.outcome == 'success'
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          # apksigner verify --print-certs намеренно НЕ используется: детали ключа
+          # в лог не печатаем. Проверяем только факт валидности схемы v1/v2/v3.
+          report=""
+          fail=0
+          for f in app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/debug/app-debug.apk; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            size=$(du -h "$f" | cut -f1)
+            if "$BT/apksigner" verify "$f" > /dev/null 2>&1; then
+              schemes=$("$BT/apksigner" verify -v "$f" 2>/dev/null | grep -c "scheme.*true" || true)
+              report="$report$name: подпись валидна (схем: $schemes), размер $size%0A"
+            else
+              report="$report$name: ПОДПИСЬ НЕВАЛИДНА%0A"
+              fail=1
+            fi
+          done
+          echo "::notice title=APK::$report"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error title=Signing::Один из APK не прошёл проверку подписи"
+            exit 1
+          fi
+
+      - name: Collect artifacts
+        if: steps.release.outcome == 'success'
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk out/ZapretForAndroid-release.apk
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk out/ZapretForAndroid-debug.apk
+          fi
+          ls -l out
+
+      - name: Upload APKs
+        if: steps.release.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zapret-apk
+          path: out/*.apk
+          retention-days: 30
+
+      - name: Upload Gradle wrapper
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-wrapper
+          path: |
+            gradlew
+            gradlew.bat
+            gradle/wrapper/gradle-wrapper.jar
+            gradle/wrapper/gradle-wrapper.properties
+          if-no-files-found: ignore
+          retention-days: 30

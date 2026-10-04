@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тёмная ветка тональной пары для иконки. -->
+    <color name="ic_launcher_background">#00382A</color>
+    <color name="ic_launcher_glyph">#8CF2CE</color>
+</resources>

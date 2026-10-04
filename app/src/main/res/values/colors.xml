@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="zapret_background_light">#FFFBFE</color>
+    <color name="zapret_background_dark">#121316</color>
+
+    <!--
+      Иконка: тональная пара Material You (primary-container / on-primary-container).
+      Значения для тёмной темы — в values-night/colors.xml, поэтому одна и та же
+      адаптивная иконка выглядит уместно и на светлых, и на тёмных обоях.
+    -->
+    <color name="ic_launcher_background">#D9F2E6</color>
+    <color name="ic_launcher_glyph">#00513C</color>
+</resources>

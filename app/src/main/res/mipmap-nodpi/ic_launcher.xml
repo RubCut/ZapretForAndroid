@@ -1,0 +1,19 @@
+<!-- Легаси-иконка для API 24–25: адаптивных иконок там нет,
+     фон рисуется на весь холст, маску применяет сам лаунчер. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Фон во весь холст для лаунчеров без адаптивных иконок -->
+    <path
+        android:pathData="M0,0h108v108h-108z"
+        android:fillColor="@color/ic_launcher_background" />
+    <path
+        android:pathData="M53.6,27 L39.6,49 L63.68,49 L66.6,45.2 L53.6,45.2 Z"
+        android:fillColor="@color/ic_launcher_glyph" />
+    <path
+        android:pathData="M45.1,56.5 L54.8,57.6 L49.6,81 L68.45,56.5 Z"
+        android:fillColor="@color/ic_launcher_glyph" />
+</vector>

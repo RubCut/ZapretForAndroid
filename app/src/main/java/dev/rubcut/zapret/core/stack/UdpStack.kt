@@ -69,7 +69,12 @@ class UdpStack(
 
         if (cfg.blockQuic && port == 443 && dgram.payloadLength > 0) {
             val first = dgram.buffer[dgram.payloadOffset].toInt() and 0xFF
-            // Long header (0xC0..0xFF с установленным старшим битом) — это QUIC Initial/Handshake.
+            // Старший бит — признак long header, то есть QUIC Initial/Handshake.
+            // Именно один этот бит, а не маска 0xC0: провайдеры обфусцируют QUIC,
+            // обнуляя reserved-бит 0x40, и такой Initial тоже обязан
+            // блокироваться — иначе клиент уходит в QUIC, где мы не умеем
+            // десинхронизировать SNI. Short header (1-RTT, бит 0x80 сброшен) —
+            // это уже установленное соединение, его рвать нельзя.
             if (first and 0x80 != 0) {
                 TrafficStats.quicBlocked()
                 return true

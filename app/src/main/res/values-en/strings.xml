@@ -56,8 +56,12 @@
     <string name="notif_channel_logs">Events and errors</string>
     <string name="notif_title_running">Zapret is active</string>
     <string name="notif_text_running">Profile: %1$s · connections: %2$d</string>
+    <string name="notif_title_starting">Starting Zapret…</string>
+    <string name="notif_text_starting">Bringing up the tunnel</string>
     <string name="notif_action_stop">Stop</string>
     <string name="notif_action_open">Open</string>
+    <string name="notif_event_stopped">Bypass stopped</string>
+    <string name="notif_event_failed">Bypass failed to start</string>
 
     <string name="profiles_title">Profiles</string>
     <string name="profiles_subtitle">Ready-made strategy sets, like the .bat files in zapret-discord-youtube</string>
@@ -105,7 +109,7 @@
     <string name="strategy_tlsrec_hint">A single ClientHello record is repacked into several TLS records of the same type. Legal TLS, but it breaks DPI parsing.</string>
     <string name="strategy_wssize">Slow window start (--wssize)</string>
     <string name="strategy_wssize_hint">Shrinks the advertised window for the first bytes, forcing the server to fragment ServerHello. 0 disables it.</string>
-    <string name="strategy_wssize_bytes">Bytes with the reduced window</string>
+    <string name="strategy_wssize_bytes">Packets with the reduced window</string>
     <string name="strategy_wssize_window">Window size, bytes</string>
 
     <string name="strategy_group_filter">Flow filters</string>

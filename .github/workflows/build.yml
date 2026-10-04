@@ -51,14 +51,14 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
 
-      # Gradle Wrapper (gradlew, gradle-wrapper.jar) — бинарный, поэтому в git
-      # не лежит. Генерируем на месте: после этого сборка идёт через ./gradlew,
-      # а артефакт gradle-wrapper можно распаковать в локальный клон.
-      - name: Generate Gradle wrapper
-        run: gradle wrapper --gradle-version 8.9 --distribution-type bin 2>&1 | tee wrapper.log
+      # Обёртка Gradle лежит в репозитории (gradlew + gradle-wrapper.jar), поэтому
+      # клон собирается ровно той версией Gradle, что и CI: 8.9 из
+      # gradle/wrapper/gradle-wrapper.properties. Ничего генерировать не нужно.
+      - name: Verify Gradle wrapper
+        run: |
+          chmod +x gradlew
+          ./gradlew --version 2>&1 | tee wrapper.log
 
       # Интеграционные тесты стека на JVM: полное TCP-соединение через TcpStack,
       # UDP-релей, контрольные суммы независимым эталоном, кодек DNS.
@@ -266,17 +266,4 @@ jobs:
         with:
           name: zapret-apk
           path: out/*.apk
-          retention-days: 30
-
-      - name: Upload Gradle wrapper
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gradle-wrapper
-          path: |
-            gradlew
-            gradlew.bat
-            gradle/wrapper/gradle-wrapper.jar
-            gradle/wrapper/gradle-wrapper.properties
-          if-no-files-found: ignore
           retention-days: 30

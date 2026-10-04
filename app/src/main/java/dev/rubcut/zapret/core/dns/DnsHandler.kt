@@ -32,7 +32,9 @@ class DnsHandler(
     private val io: CoroutineDispatcher,
     private val configProvider: () -> AppConfig,
     private val listsProvider: () -> HostListStore.Snapshot,
-    private val virtualServers: Set<String>
+    private val virtualServers: Set<String>,
+    /** Те же виртуальные адреса, но сравнением по [InetAddress], а не по строке. */
+    private val virtualAddresses: Set<InetAddress> = emptySet()
 ) {
 
     val resolver = DnsResolver(
@@ -54,7 +56,7 @@ class DnsHandler(
         val cfg = configProvider()
         if (dgram.dstPort != 53) return false
         val dstAddress = ip.dst.hostAddress ?: return false
-        if (!cfg.dnsHijack && !virtualServers.contains(dstAddress)) return false
+        if (!cfg.dnsHijack && !isVirtual(dstAddress, ip.dst)) return false
         if (dgram.payloadLength < 12) return false
 
         val payload = dgram.buffer.copyOfRange(dgram.payloadOffset, dgram.payloadOffset + dgram.payloadLength)
@@ -113,6 +115,18 @@ class DnsHandler(
         return true
     }
 
+    /**
+     * Сравнение с виртуальными адресами.
+     *
+     * Строковое сравнение по `hostAddress` не работает для IPv6: Java печатает
+     * адрес развёрнутым («fd61:7a6f:ee07:0:0:0:0:2»), поэтому литерал из
+     * константы никогда не совпадал и запросы к нашему же DNS-адресу уходили
+     * «самому себе». Сначала сверяем точные [InetAddress], а строкой — только
+     * как запасной путь для IPv4.
+     */
+    private fun isVirtual(hostAddress: String?, addr: InetAddress): Boolean =
+        virtualAddresses.contains(addr) || virtualServers.contains(hostAddress ?: "")
+
     private suspend fun resolve(
         cfg: AppConfig,
         query: DnsQuery,
@@ -122,7 +136,7 @@ class DnsHandler(
         // Если приложение спросило наш же виртуальный DNS-сервер, пересылать
         // запрос «туда же» нельзя — это петля. Тогда идём в системные/свои.
         fun forward(verbatim: Boolean): ByteArray? =
-            if (virtualServers.contains(requestedServer.hostAddress)) {
+            if (isVirtual(requestedServer.hostAddress, requestedServer)) {
                 resolver.forwardQueryBytes(payload, payload.size)
             } else if (verbatim) {
                 resolver.forwardRaw(payload, payload.size, requestedServer, 53)

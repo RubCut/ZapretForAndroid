@@ -75,6 +75,9 @@ class ZapretVpnService : VpnService() {
         const val CHANNEL_EVENTS = "zapret_events"
         const val NOTIFICATION_ID = 0x5A41
 
+        /** Отдельный ID для событийных уведомлений (остановка/ошибка). */
+        const val EVENT_NOTIFICATION_ID = 0x5A42
+
         /**
          * Запас для сотовых сетей, когда настоящий MTU узнать не удалось
          * (LinkProperties.getMtu() есть только с API 29). У большинства
@@ -87,6 +90,19 @@ class ZapretVpnService : VpnService() {
         const val DNS_ADDR_V4 = "10.211.0.2"
         const val VPN_ADDR_V6 = "fd61:7a6f:ee7::1"
         const val DNS_ADDR_V6 = "fd61:7a6f:ee7::2"
+
+        /**
+         * Адреса нашего виртуального DNS как [InetAddress], а не строки.
+         *
+         * Строковое сравнение здесь непригодно: `Inet6Address.getHostAddress()`
+         * печатает адрес развёрнутым («fd61:7a6f:ee07:0:0:0:0:2»), и литерал
+         * «fd61:7a6f:ee7::2» с ним никогда не совпадёт. Из-за этого на двухстёковых
+         * сетях не срабатывало ни перенаправление TCP-DNS, ни защита от петли.
+         */
+        val VIRTUAL_DNS_ADDRESSES: Set<InetAddress> = setOfNotNull(
+            IpLiterals.parse(DNS_ADDR_V4),
+            IpLiterals.parse(DNS_ADDR_V6)
+        )
 
         /** Живой экземпляр сервиса — нужен UI для проверки DNS через защищённые сокеты. */
         @Volatile
@@ -225,7 +241,11 @@ class ZapretVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_TOGGLE -> {
-                if (running) stopEverything("по запросу пользователя") else startVpn()
+                if (running) {
+                    stopEverything("по запросу пользователя")
+                } else {
+                    startVpn()
+                }
                 return START_STICKY
             }
             else -> startVpn()
@@ -284,6 +304,16 @@ class ZapretVpnService : VpnService() {
         VpnController.markStarting()
         TrafficStats.reset()
         ReverseHostCache.clear()
+
+        // Сервис запущен через startForegroundService(), поэтому startForeground()
+        // обязан прозвучать до любой асинхронной работы — в том числе до первого
+        // обращения к конфигурации и до establish(). establish() может вернуть
+        // null (отозванное разрешение VPN, чужой активный туннель, недопустимый
+        // маршрут), и раньше в этом случае процесс убивался системой с
+        // ForegroundServiceDidNotStartInTimeException — вместо внятной ошибки
+        // пользователь получал падение приложения.
+        startForegroundSafe(null)
+
         s.launch {
             try {
                 AppGraph.config.ensureLoaded()
@@ -374,13 +404,24 @@ class ZapretVpnService : VpnService() {
             }
         }
         if (cfg.ipv6) {
-            try {
-                builder.addAddress(VPN_ADDR_V6, 128)
-                builder.addRoute("::", 0)
-                builder.addDnsServer(DNS_ADDR_V6)
-                hasV6 = true
-            } catch (e: Exception) {
-                LogManager.w("IPv6 недоступен на этом устройстве: ${e.message}")
+            // Объявлять маршрут ::/0 в сети без IPv6 бессмысленно и вредно:
+            // приложения получают AAAA, пробуют v6 и висят по connectTimeout
+            // (в логе это выглядит как «интернет есть, но всё очень медленно»).
+            if (physicalHasIpv6()) {
+                try {
+                    builder.addAddress(VPN_ADDR_V6, 128)
+                    builder.addRoute("::", 0)
+                    builder.addDnsServer(DNS_ADDR_V6)
+                    hasV6 = true
+                } catch (e: Exception) {
+                    LogManager.w("IPv6 недоступен на этом устройстве: ${e.message}")
+                }
+            } else {
+                LogManager.i(
+                    LogTag.VPN,
+                    "IPv6 включён в настройках, но у физической сети нет IPv6-адреса — " +
+                        "маршрут ::/0 не объявляем"
+                )
             }
         }
         if (!hasV4 && !hasV6) throw IllegalStateException("не удалось назначить адрес туннелю")
@@ -405,7 +446,8 @@ class ZapretVpnService : VpnService() {
             io = Dispatchers.IO,
             configProvider = { tunnelConfig() },
             listsProvider = { AppGraph.lists.current },
-            virtualServers = setOf(DNS_ADDR_V4, DNS_ADDR_V6)
+            virtualServers = setOf(DNS_ADDR_V4, DNS_ADDR_V6),
+            virtualAddresses = VIRTUAL_DNS_ADDRESSES
         )
 
         val tcp = TcpStack(
@@ -413,7 +455,8 @@ class ZapretVpnService : VpnService() {
             protector = protector,
             scope = s,
             configProvider = { tunnelConfig() },
-            listsProvider = { AppGraph.lists.current }
+            listsProvider = { AppGraph.lists.current },
+            virtualDns = VIRTUAL_DNS_ADDRESSES
         )
         tcp.dnsRedirect = pickDnsRedirect(cfg)
 
@@ -548,6 +591,27 @@ class ZapretVpnService : VpnService() {
             val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return@any false
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+        }
+    } catch (e: Throwable) {
+        false
+    }
+
+    /**
+     * Есть ли у физической (не-VPN) сети реальный IPv6-адрес.
+     *
+     * Проверяем именно адрес в [LinkProperties], а не `NET_CAPABILITY_IPV6`:
+     * у части операторов capability выставлен, а трафик всё равно не уходит
+     * (IPv6-only APN без маршрута, tethering без v6).
+     */
+    private fun physicalHasIpv6(): Boolean = try {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val networks = cm.allNetworks ?: return false
+        networks.any { n ->
+            val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return@any false
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@any false
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return@any false
+            val links = runCatching { cm.getLinkProperties(n)?.linkAddresses }.getOrNull() ?: return@any false
+            links.any { it.address is java.net.Inet6Address && !it.address.isLinkLocalAddress }
         }
     } catch (e: Throwable) {
         false
@@ -857,6 +921,11 @@ class ZapretVpnService : VpnService() {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {
         }
+        // Молчаливая остановка — худший вариант: пользователь думает, что обход
+        // работает, а трафик давно идёт мимо. О тихой остановке сообщаем явно.
+        if (reason != "по запросу пользователя" && reason != "профиль выключен") {
+            postEvent(getString(R.string.notif_event_stopped), reason)
+        }
         stopSelf()
     }
 
@@ -870,8 +939,49 @@ class ZapretVpnService : VpnService() {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {
         }
+        postEvent(getString(R.string.notif_event_failed), message)
         stopSelf()
     }
+
+    /**
+     * Событийное уведомление (канал CHANNEL_EVENTS) — то самое, чем управляет
+     * переключатель «Уведомление о работе». Само постоянное уведомление
+     * foreground-сервиса отключить нельзя: Android требует его всегда.
+     */
+    private fun postEvent(title: String, text: String) {
+        if (!AppGraph.ready) return
+        if (!AppGraph.config.current.notificationEnabled) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfNotificationPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            val openIntent = PendingIntent.getActivity(
+                this, 12, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            nm.notify(
+                EVENT_NOTIFICATION_ID,
+                NotificationCompat.Builder(this, CHANNEL_EVENTS)
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                    .setContentIntent(openIntent)
+                    .setAutoCancel(true)
+                    .setOnlyAlertOnce(true)
+                    .setColor(ContextCompat.getColor(this, R.color.ic_launcher_background))
+                    .build()
+            )
+        } catch (e: Exception) {
+            LogManager.d(LogTag.VPN, "событийное уведомление: ${e.message}")
+        }
+    }
+
+    private fun checkSelfNotificationPermission(): Int =
+        checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
 
     /**
      * Короткая сводка состояния туннеля для отчёта «одной кнопкой»: по ней
@@ -937,7 +1047,7 @@ class ZapretVpnService : VpnService() {
         runCatching { nm.createNotificationChannel(events) }
     }
 
-    private fun startForegroundSafe(profileName: String) {
+    private fun startForegroundSafe(profileName: String?) {
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         } else 0
@@ -959,7 +1069,8 @@ class ZapretVpnService : VpnService() {
         }
     }
 
-    private fun buildNotification(profileName: String, connections: Int): Notification {
+    /** [profileName] == null — туннель ещё поднимается, уведомление об этом. */
+    private fun buildNotification(profileName: String?, connections: Int): Notification {
         val openIntent = PendingIntent.getActivity(
             this, 10, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -971,8 +1082,14 @@ class ZapretVpnService : VpnService() {
         )
         return NotificationCompat.Builder(this, CHANNEL_MAIN)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.notif_title_running))
-            .setContentText(getString(R.string.notif_text_running, profileName, connections))
+            .setContentTitle(
+                if (profileName == null) getString(R.string.notif_title_starting)
+                else getString(R.string.notif_title_running)
+            )
+            .setContentText(
+                if (profileName == null) getString(R.string.notif_text_starting)
+                else getString(R.string.notif_text_running, profileName, connections)
+            )
             .setContentIntent(openIntent)
             .addAction(0, getString(R.string.notif_action_open), openIntent)
             .addAction(0, getString(R.string.notif_action_stop), stopIntent)

@@ -256,7 +256,7 @@ fun SettingsScreen(vm: AppViewModel, navController: NavHostController) {
                         title = stringResource(R.string.settings_reset_all),
                         subtitle = stringResource(R.string.settings_reset_confirm),
                         icon = Icons.Rounded.DeleteForever,
-                        onClick = { vm.resetLists() }
+                        onClick = { vm.resetAll() }
                     )
                 }
             }
@@ -273,7 +273,12 @@ fun SettingsScreen(vm: AppViewModel, navController: NavHostController) {
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        stringResource(R.string.about_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
+                        stringResource(
+                            R.string.about_version,
+                            BuildConfig.VERSION_NAME,
+                            BuildConfig.VERSION_CODE,
+                            BuildConfig.GIT_SHA.take(8)
+                        ),
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

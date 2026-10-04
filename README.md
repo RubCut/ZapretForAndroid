@@ -135,16 +135,17 @@ git clone <этот репозиторий>
 cd ZapretForAndroid
 ```
 
-Gradle Wrapper (`gradlew`, `gradle-wrapper.jar`) в репозиторий не положен — это бинарные файлы.
-Откройте проект в Android Studio: она сама сгенерирует обёртку под версию из
-`gradle/wrapper/gradle-wrapper.properties` (Gradle 8.9). Либо поставьте Gradle 8.9 в `PATH` и выполните:
+Gradle Wrapper лежит в репозитории (`gradlew`, `gradlew.bat`,
+`gradle/wrapper/gradle-wrapper.jar`), поэтому установленный Gradle не нужен —
+используется ровно та версия, что и в CI (8.9).
 
 ```bash
-gradle wrapper --gradle-version 8.9
-./gradlew assembleDebug
+./gradlew assembleDebug        # отладочный APK
+./gradlew assembleRelease      # подписанный APK с R8
+./gradlew testDebugUnitTest    # интеграционные тесты пакетного тракта
 ```
 
-Готовый APK появится в `app/build/outputs/apk/debug/app-debug.apk`.
+Готовый отладочный APK появится в `app/build/outputs/apk/debug/app-debug.apk`.
 
 | Параметр | Значение |
 |---|---|
@@ -171,18 +172,19 @@ CI, поэтому новый APK ставится поверх старого �
 > с теми же именами. Если `release.p12` отсутствует, релиз автоматически
 > откатывается на debug-ключ — сборка не падает.
 
-### Готовые APK из CI
+### Готовые APK
 
-Каждый пуш собирает GitHub Actions (`.github/workflows/build.yml`):
-`assembleRelease` (подписанный, с R8) и `assembleDebug`. Артефакты —
-вкладка **Actions** → последний запуск → **Artifacts**:
+**Релизы** — вкладка **Releases**. Каждый тег вида `v1.0.0` запускает
+`.github/workflows/release.yml` и публикует подписанный APK
+`zapret-v1.0.0.apk`. Это постоянные файлы, в отличие от артефактов Actions.
 
-- `zapret-apk` — `ZapretForAndroid-release.apk` и `ZapretForAndroid-debug.apk`
-- `gradle-wrapper` — `gradlew`, `gradlew.bat`, `gradle/wrapper/` (распакуйте в
-  клон репозитория, чтобы собирать локально без установленного Gradle)
+**Артефакты сборки** — каждый пуш собирает `.github/workflows/build.yml`:
+`assembleRelease` (подписанный, с R8) и `assembleDebug`. Вкладка **Actions** →
+последний запуск → **Artifacts** → `zapret-apk`. Артефакты живут 30 дней,
+так что для постоянной ссылки нужен релиз по тегу.
 
-В логе сборки шаг **Report signing** печатает сертификат, которым подписан
-каждый APK, — им можно убедиться, что подпись та самая.
+В логе сборки шаг **Report signing** печатает результат проверки подписи
+каждого APK — им можно убедиться, что подпись валидна и что схемы на месте.
 
 ---
 

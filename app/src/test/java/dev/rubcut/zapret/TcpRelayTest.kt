@@ -502,7 +502,10 @@ class TcpRelayTest {
             val ip = parseIp(pkt, pkt.size)!!
             stack.onPacket(ip, parseUdp(pkt, ip.payloadOffset, ip.payloadLength)!!)
 
-            val deadline = System.currentTimeMillis() + 8000
+            // Локальный UDP-ответ приходит за миллисекунды; 8 с тут означали лишь
+            // крошечный запас на разогрев JVM. На загруженной машине (CI-раннер
+            // параллельно компилирует) этого не хватало, и тест падал впустую.
+            val deadline = System.currentTimeMillis() + 30000
             while (got.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(10)
             assertEquals("первый UDP-пакет сессии потерян", listOf("ping"), got.toList())
 

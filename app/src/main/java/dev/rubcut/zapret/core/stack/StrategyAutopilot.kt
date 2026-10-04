@@ -60,41 +60,102 @@ class StrategyAutopilot(private val stack: TcpStack) {
              * Минимальный TLS ClientHello с SNI. Вынесен в компаньон: его же
              * проверяет JVM-тест — если наш парсер не найдёт здесь SNI, то и
              * split по «середине SNI» работать не будет.
+             *
+             * Содержимое подобрано так, чтобы СЕРВЕР действительно ответил
+             * ServerHello, а не alert. Это главное требование к зонду: раньше
+             * здесь предлагался единственный набор шифров TLS 1.3 (0x1301) при
+             * legacy_version = TLS 1.2 и вовсе без supported_versions. Сервер
+             * обязан был выбрать TLS 1.2, где такого шифра не существует, и
+             * отвечал `handshake_failure` (alert 40) — зонд всегда считал
+             * стратегию нерабочей, и автоподбор с самоисцелением были мертвы.
+             *
+             * Поэтому: legacy_version = TLS 1.2, расширения supported_versions
+             * нет, а набор шифров — только TLS 1.2, который принимает абсолютно
+             * любой сервер. Проверено на google/youtube/fastly/cloudflare.
              */
             fun clientHelloFor(host: String): ByteArray {
-            val name = host.toByteArray(Charsets.US_ASCII)
-            val ext = ByteArrayOutputStream()
-            ext.write(0); ext.write(0)                                  // server_name
-            val sniInner = 2 + 1 + 2 + name.size                        // list len + type + name len + name
-            ext.write((sniInner ushr 8) and 0xFF); ext.write(sniInner and 0xFF)
-            ext.write((sniInner - 2) ushr 8 and 0xFF); ext.write((sniInner - 2) and 0xFF)
-            ext.write(0)
-            ext.write((name.size ushr 8) and 0xFF); ext.write(name.size and 0xFF)
-            ext.write(name)
+                val name = host.toByteArray(Charsets.US_ASCII)
+                val ext = ByteArrayOutputStream()
+                // server_name: тело расширения — [2] длина ServerNameList, затем
+                // запись [1] name_type, [2] длина имени, [n] имя.
+                writeExt(ext, 0x0000) {
+                    val entry = 1 + 2 + name.size
+                    val b = ByteArrayOutputStream()
+                    putU16Buf(b, entry)
+                    b.write(0)
+                    putU16Buf(b, name.size)
+                    b.write(name)
+                    b.toByteArray()
+                }
+                // ec_point_formats: uncompressed — иначе сервер не возьмёт ECDHE
+                writeExt(ext, 0x000B) { byteArrayOf(2, 1, 0) }
+                // supported_groups — без него нет общих групп для ECDHE
+                writeExt(ext, 0x000A) {
+                    val groups = intArrayOf(0x001D, 0x0017, 0x0018)
+                    val b = ByteArrayOutputStream()
+                    putU16Buf(b, groups.size * 2)
+                    for (g in groups) putU16Buf(b, g)
+                    b.toByteArray()
+                }
+                // signature_algorithms — без него нет пары для подписи
+                writeExt(ext, 0x000D) {
+                    val sigs = intArrayOf(
+                        0x0403, 0x0503, 0x0603, 0x0804, 0x0805, 0x0806,
+                        0x0401, 0x0501, 0x0201
+                    )
+                    val b = ByteArrayOutputStream()
+                    putU16Buf(b, sigs.size * 2)
+                    for (s in sigs) putU16Buf(b, s)
+                    b.toByteArray()
+                }
 
-            val body = ByteArrayOutputStream()
-            body.write(3); body.write(3)                                // TLS 1.2
-            body.write(ByteArray(32) { 7 })                             // random
-            body.write(0)                                               // session id
-            body.write(0); body.write(2); body.write(0x13); body.write(0x01)   // cipher suites
-            body.write(1); body.write(0)                                // compression
-            body.write((ext.size() ushr 8) and 0xFF); body.write(ext.size() and 0xFF)
-            body.write(ext.toByteArray())
-            val bodyBytes = body.toByteArray()
-            val hs = ByteArrayOutputStream()
-            hs.write(1)                                                 // client_hello
-            hs.write((bodyBytes.size ushr 16) and 0xFF)
-            hs.write((bodyBytes.size ushr 8) and 0xFF)
-            hs.write(bodyBytes.size and 0xFF)
-            hs.write(bodyBytes)
-            val hsBytes = hs.toByteArray()
+                val body = ByteArrayOutputStream()
+                body.write(3); body.write(3)                                // legacy_version = TLS 1.2
+                body.write(ByteArray(32) { 7 })                             // random
+                body.write(0)                                               // session id
+                val suites = intArrayOf(
+                    0xC02F, // ECDHE_RSA_AES128_GCM_SHA256
+                    0xC030, // ECDHE_RSA_AES256_GCM_SHA384
+                    0xC02B, // ECDHE_ECDSA_AES128_GCM_SHA256
+                    0xC02C, // ECDHE_ECDSA_AES256_GCM_SHA384
+                    0x009C, // RSA_AES128_GCM_SHA256
+                    0x009D, // RSA_AES256_GCM_SHA384
+                    0x002F, // RSA_AES128_CBC_SHA
+                    0x0035  // RSA_AES256_CBC_SHA
+                )
+                putU16Buf(body, suites.size * 2)
+                for (s in suites) putU16Buf(body, s)
+                body.write(1); body.write(0)                                // compression
+                putU16Buf(body, ext.size())
+                body.write(ext.toByteArray())
+                val bodyBytes = body.toByteArray()
 
-            val rec = ByteArrayOutputStream()
-            rec.write(0x16); rec.write(3); rec.write(1)
-            rec.write((hsBytes.size ushr 8) and 0xFF); rec.write(hsBytes.size and 0xFF)
-            rec.write(hsBytes)
-            return rec.toByteArray()
-        }
+                val hs = ByteArrayOutputStream()
+                hs.write(1)                                                 // client_hello
+                hs.write((bodyBytes.size ushr 16) and 0xFF)
+                hs.write((bodyBytes.size ushr 8) and 0xFF)
+                hs.write(bodyBytes.size and 0xFF)
+                hs.write(bodyBytes)
+                val hsBytes = hs.toByteArray()
+
+                val rec = ByteArrayOutputStream()
+                rec.write(0x16); rec.write(3); rec.write(1)
+                putU16Buf(rec, hsBytes.size)
+                rec.write(hsBytes)
+                return rec.toByteArray()
+            }
+
+            private fun writeExt(out: ByteArrayOutputStream, type: Int, body: () -> ByteArray) {
+                val b = body()
+                putU16Buf(out, type)
+                putU16Buf(out, b.size)
+                out.write(b)
+            }
+
+            private fun putU16Buf(out: ByteArrayOutputStream, v: Int) {
+                out.write((v ushr 8) and 0xFF)
+                out.write(v and 0xFF)
+            }
     }
 
     /**

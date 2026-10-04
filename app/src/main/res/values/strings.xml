@@ -59,8 +59,12 @@
     <string name="notif_channel_logs">События и ошибки</string>
     <string name="notif_title_running">Zapret активен</string>
     <string name="notif_text_running">Профиль: %1$s · соединений: %2$d</string>
+    <string name="notif_title_starting">Zapret запускается…</string>
+    <string name="notif_text_starting">Поднимаем туннель</string>
     <string name="notif_action_stop">Остановить</string>
     <string name="notif_action_open">Открыть</string>
+    <string name="notif_event_stopped">Обход остановлен</string>
+    <string name="notif_event_failed">Обход не запустился</string>
 
     <!-- Профили -->
     <string name="profiles_title">Профили</string>
@@ -110,7 +114,7 @@
     <string name="strategy_tlsrec_hint">Одна запись ClientHello переупаковывается в несколько TLS-записей того же типа. Это легально для TLS, но ломает разбор у DPI.</string>
     <string name="strategy_wssize">Медленный старт окна (--wssize)</string>
     <string name="strategy_wssize_hint">Уменьшает advertised window на первых байтах, заставляя сервер дробить ServerHello. 0 — отключено.</string>
-    <string name="strategy_wssize_bytes">Байт с урезанным окном</string>
+    <string name="strategy_wssize_bytes">Пакетов с урезанным окном</string>
     <string name="strategy_wssize_window">Размер окна, байт</string>
 
     <string name="strategy_group_filter">Фильтры потока</string>

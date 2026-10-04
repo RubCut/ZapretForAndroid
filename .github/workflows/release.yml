@@ -1,0 +1,86 @@
+name: Release
+
+# Релиз по тегу: v1.0.0, 1.0.0 или v1.0.0-beta1 — без разницы, тег
+# используется как есть. Подписанный APK появляется на странице Releases
+# и в реестре пакетов репозитория, а не живёт 30 дней в артефактах Actions.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.*'
+      - '[0-9]+.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег для релиза (например v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Signed APK → GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify Gradle wrapper
+        run: |
+          chmod +x gradlew
+          ./gradlew --version
+
+      # Подпись берётся из того же зафиксированного ключа, что и в обычной
+      # сборке, поэтому APK ставится поверх предыдущего без удаления
+      # приложения и без потери настроек.
+      - name: Build release APK
+        run: |
+          ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease
+
+      - name: Verify signature
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -f "$APK" || { echo "::error::APK не собран"; exit 1; }
+          "$BT/apksigner" verify "$APK" || { echo "::error::подпись невалидна"; exit 1; }
+          echo "::notice title=APK::подпись валидна"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "zapret-$TAG.apk"
+          notes="$(mktemp)"
+          {
+            echo "Подписанный APK Zapret для Android."
+            echo
+            echo "- minSdk 24 (Android 7.0), targetSdk 35"
+            echo "- обход DPI-блокировок без root, на собственном TCP/IP-стеке"
+            echo "- подпись тем же ключом, что и у предыдущих сборок — обновление ставится поверх"
+            echo
+            echo "Сборка: \`$GITHUB_SHA\`"
+          } > "$notes"
+          gh release create "$TAG" "zapret-$TAG.apk" \
+            --title "Zapret $TAG" \
+            --notes-file "$notes" \
+            --generate-notes

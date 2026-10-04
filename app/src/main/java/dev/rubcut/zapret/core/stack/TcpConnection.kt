@@ -130,7 +130,16 @@ class TcpConnection(
     private var connectStrategy: Strategy = Strategy()
 
     init {
-        upstreamAddr = if (serverPort == 53) stack.dnsRedirectTarget() ?: serverAddr else serverAddr
+        // Наш виртуальный DNS в сети не существует, поэтому любой TCP к нему
+        // (в том числе отправленный системным резолвером) уходит в настоящий
+        // DNS-сервер. Для чужих хостов на порту 53 перенаправление тоже
+        // безвредно — так мы перехватываем DNS поверх TCP целиком.
+        upstreamAddr =
+            if (serverPort == 53 || stack.isVirtualDns(serverAddr)) {
+                stack.dnsRedirectTarget() ?: serverAddr
+            } else {
+                serverAddr
+            }
         val mtu = cfg.mtu.coerceIn(576, 10000)
         val overhead = (if (v6) 40 else 20) + 20 + (if (clientUsesTimestamps) 12 else 0)
         val maxSeg = (mtu - overhead).coerceAtLeast(536)

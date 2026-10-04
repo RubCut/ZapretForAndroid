@@ -84,7 +84,9 @@ class TcpStack(
     val protector: SocketProtector,
     val scope: CoroutineScope,
     private val configProvider: () -> AppConfig,
-    private val listsProvider: () -> HostListStore.Snapshot
+    private val listsProvider: () -> HostListStore.Snapshot,
+    /** Адреса нашего виртуального DNS: см. ZapretVpnService.VIRTUAL_DNS_ADDRESSES. */
+    private val virtualDns: Set<InetAddress> = emptySet()
 ) {
 
     private val threadIndex = AtomicInteger()
@@ -146,7 +148,21 @@ class TcpStack(
 
     fun dnsRedirectTarget(): java.net.InetAddress? = dnsRedirect
 
+    /** Адрес назначения — один из наших виртуальных DNS-серверов туннеля? */
+    fun isVirtualDns(addr: java.net.InetAddress?): Boolean =
+        addr != null && virtualDns.contains(addr)
+
     fun onPacket(ip: IpHeader, seg: TcpSegment) {
+        // Виртуальные DNS-адреса — внутренняя обвязка туннеля, в сети их не
+        // существует. TCP к ним приходит от системного резолвера: на порт 53
+        // его надо перенаправить на наш резолвер, а любые другие порты (netd
+        // пробует там DoT, 853) надо отбивать сразу — иначе каждая попытка
+        // висит на connectTimeout и сеть выглядит «почти мёртвой».
+        if (isVirtualDns(ip.dst) && seg.dstPort != 53) {
+            if (seg.isSyn && !seg.isAck) sendReset(ip, seg)
+            return
+        }
+
         val key = TcpKey(ip.src, seg.srcPort, ip.dst, seg.dstPort)
         var conn = connections[key]
         if (conn == null || conn.isClosed()) {

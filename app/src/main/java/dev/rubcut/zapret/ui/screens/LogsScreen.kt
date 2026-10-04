@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -139,28 +140,39 @@ fun LogsScreen(vm: AppViewModel, navController: NavHostController) {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            Row(
+            // Фильтров десять (все + ошибки + восемь подсистем), в обычный Row они не
+            // помещаются: последние чипы измеряются на нулевой ширине и
+            // становятся ненажимаемыми. LazyRow прокручивает их по горизонтали.
+            LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(end = 16.dp)
             ) {
-                FilterChip(
-                    selected = filter == null && !errorsOnly,
-                    onClick = { filter = null; errorsOnly = false },
-                    label = { Text(stringResource(R.string.logs_filter_all)) }
-                )
-                FilterChip(
-                    selected = errorsOnly,
-                    onClick = { errorsOnly = !errorsOnly; filter = null },
-                    label = { Text(stringResource(R.string.logs_filter_err)) }
-                )
-                LogTag.values().forEach { tag ->
-                    FilterChip(
-                        selected = filter == tag,
-                        onClick = { filter = if (filter == tag) null else tag; errorsOnly = false },
-                        label = { Text(tag.name) }
-                    )
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = filter == null && !errorsOnly,
+                            onClick = { filter = null; errorsOnly = false },
+                            label = { Text(stringResource(R.string.logs_filter_all)) }
+                        )
+                        FilterChip(
+                            selected = errorsOnly,
+                            onClick = { errorsOnly = !errorsOnly; filter = null },
+                            label = { Text(stringResource(R.string.logs_filter_err)) }
+                        )
+                        LogTag.values().forEach { tag ->
+                            FilterChip(
+                                selected = filter == tag,
+                                onClick = { filter = if (filter == tag) null else tag; errorsOnly = false },
+                                label = { Text(tag.name) }
+                            )
+                        }
+                    }
                 }
             }
 

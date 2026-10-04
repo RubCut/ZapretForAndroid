@@ -327,6 +327,68 @@ class EndToEndTlsTest {
         fun close() = runCatching { listener.close() }
     }
 
+    /**
+     * Границы фрагментов на выходе из движка — единственное место, где они
+     * видны однозначно.
+     *
+     * Прокси выше их не меряет: recv() не обязан совпадать с границами
+     * TCP-сегментов. А `DesyncPlan.writes` — это ровно те записи, которые стек
+     * делает в сокет по отдельности, то есть ровно то, что видит DPI.
+     */
+    @Test
+    fun engineEmitsFragmentsSplitInsideHostname() {
+        val host = "rr12---sn-4g5ednse.googlevideo.com"
+        val hello = StrategyAutopilotHelloFactory.build(host)
+        val plan = dev.rubcut.zapret.core.desync.DesyncEngine()
+            .plan(hello, dev.rubcut.zapret.core.desync.FlowContext(443, null, false), youtubeStrategy())
+
+        assertTrue("стратегия должна быть применена", plan.applied)
+        assertEquals(
+            "multisplit с точками FIRST,MIDSNI обязан дать три фрагмента, а дал ${plan.writes.size}",
+            3, plan.writes.size
+        )
+
+        val rejoined = plan.writes.fold(ByteArray(0)) { a, w -> a + w }
+        assertTrue("фрагменты не склеились в исходный ClientHello", rejoined.contentEquals(hello))
+
+        // Первая граница — один байт (FIRST).
+        assertEquals("первый фрагмент должен быть длиной 1 байт", 1, plan.writes[0].size)
+
+        // Вторая граница обязана лежать ВНУТРИ домена второго уровня.
+        val info = dev.rubcut.zapret.core.proto.Tls.parseClientHello(hello, 0, hello.size)!!
+        val boundary = plan.writes[0].size + plan.writes[1].size
+        val sldStart = info.sniStart
+        val sldEnd = info.sniStart + host.substringBeforeLast('.').length
+        assertTrue(
+            "граница $boundary вне домена ${host.substringBeforeLast('.')} " +
+                "(SNI ${info.sniStart}..${info.sniEnd}) — разрыв ушёл в случайный префикс CDN-имени",
+            boundary > sldStart && boundary <= sldEnd
+        )
+    }
+
+    /** То же для короткого имени — граница обязана остаться внутри SNI. */
+    @Test
+    fun engineEmitsFragmentsSplitInsideShortHostname() {
+        val host = "www.youtube.com"
+        val hello = StrategyAutopilotHelloFactory.build(host)
+        val plan = dev.rubcut.zapret.core.desync.DesyncEngine()
+            .plan(hello, dev.rubcut.zapret.core.desync.FlowContext(443, null, false), youtubeStrategy())
+
+        assertEquals(3, plan.writes.size)
+        val info = dev.rubcut.zapret.core.proto.Tls.parseClientHello(hello, 0, hello.size)!!
+        val boundary = plan.writes[0].size + plan.writes[1].size
+        assertTrue(
+            "граница $boundary вне имени $host",
+            boundary > info.sniStart && boundary < info.sniEnd
+        )
+    }
+
+    private fun youtubeStrategy() = Strategy(
+        desync = DesyncMode.MULTISPLIT,
+        splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+        splitDelayMs = 2
+    )
+
     private fun youtubeConfig() = AppConfig(
         desync = DesyncMode.MULTISPLIT,
         splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),

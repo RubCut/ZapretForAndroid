@@ -230,6 +230,13 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // 0x16 — TLS Handshake: сервер дошёл до ответа на ClientHello.
             // 0x15 (alert) и мусор означают, что обход не сработал.
             result = first == 0x16
+            LogManager.d(
+                LogTag.DPI,
+                "зонд $host:${port} «${strategyLabel(strategy)}» → ответ 0x%02x (%s)".format(
+                    first,
+                    if (result) "ServerHello" else "отказ сервера или обхода"
+                )
+            )
         } finally {
             stack.probeFor = null
             stack.packetWriter.tap = null
@@ -243,6 +250,16 @@ class StrategyAutopilot(private val stack: TcpStack) {
     } ?: false
 
     /* ------------------------------------------------------------ */
+
+    /** Человекочитаемое имя стратегии для журнала. */
+    private fun strategyLabel(s: Strategy): String = buildString {
+        append(s.desync.token)
+        if (s.splitPositions.isNotEmpty()) {
+            append(' ').append(s.splitPositions.joinToString(",") { it.token })
+        }
+        if (s.splitDelayMs > 0) append(" +${s.splitDelayMs}мс")
+        if (s.tlsrecParts > 0) append(" tlsrec=${s.tlsrecParts}")
+    }
 
     private suspend fun receive(ch: Channel<ByteArray>, timeoutMs: Long, pred: (ByteArray) -> Boolean): ByteArray? =
         withTimeoutOrNull(timeoutMs) {

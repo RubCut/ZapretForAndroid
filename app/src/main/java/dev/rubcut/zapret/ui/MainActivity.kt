@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) viewModel.notify("Без уведомления Android может остановить туннель")
+            if (!granted) viewModel.notify(getString(R.string.msg_notifications_blocked))
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {

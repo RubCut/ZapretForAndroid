@@ -349,4 +349,14 @@
     <string name="autopilot_need_vpn">Turn the tunnel on to use auto-tune</string>
     <string name="report_copy">Copy diagnostics report</string>
     <string name="report_copied">Report copied — paste it as text into chat or email</string>
+
+    <!-- Snackbars -->
+    <string name="msg_notifications_blocked">Without notifications Android may stop the tunnel</string>
+    <string name="msg_reset_all">Settings and lists have been reset</string>
+    <string name="msg_battery_already_off">Battery optimisation is already off</string>
+    <string name="msg_list_saved">List saved</string>
+    <string name="msg_lists_restored">Lists restored</string>
+    <string name="msg_args_applied">Arguments applied</string>
+    <string name="msg_config_imported">Configuration imported</string>
+    <string name="msg_config_import_failed">Could not parse the JSON</string>
 </resources>

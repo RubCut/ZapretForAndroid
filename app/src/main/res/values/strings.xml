@@ -368,4 +368,14 @@
     <string name="autopilot_need_vpn">Для автоподбора включите туннель</string>
     <string name="report_copy">Скопировать отчёт</string>
     <string name="report_copied">Отчёт скопирован — его можно вставить текстом в чат или письмо</string>
+
+    <!-- Всплывающие сообщения -->
+    <string name="msg_notifications_blocked">Без уведомления Android может остановить туннель</string>
+    <string name="msg_reset_all">Настройки и списки сброшены</string>
+    <string name="msg_battery_already_off">Оптимизация батареи уже отключена</string>
+    <string name="msg_list_saved">Список сохранён</string>
+    <string name="msg_lists_restored">Списки восстановлены</string>
+    <string name="msg_args_applied">Аргументы применены</string>
+    <string name="msg_config_imported">Конфигурация импортирована</string>
+    <string name="msg_config_import_failed">Не удалось разобрать JSON</string>
 </resources>

@@ -86,7 +86,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             repo.reset()
             lists.resetToBuiltin()
             ConnectionLog.clear()
-            notify("Настройки и списки сброшены")
+            notify(msg(R.string.msg_reset_all))
         }
     }
 
@@ -118,7 +118,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 pm?.isIgnoringBatteryOptimizations(ctx.packageName) == true
         }.getOrDefault(false)
         if (ignoring) {
-            notify("Оптимизация батареи уже отключена")
+            notify(msg(R.string.msg_battery_already_off))
             return
         }
         val direct = Intent(
@@ -162,7 +162,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun importConfig(json: String) {
         viewModelScope.launch {
             val ok = repo.importJson(json)
-            notify(if (ok) "Конфигурация импортирована" else "Не удалось разобрать JSON")
+            notify(msg(if (ok) R.string.msg_config_imported else R.string.msg_config_import_failed))
         }
     }
 
@@ -171,7 +171,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun saveList(kind: HostListStore.Kind, text: String) {
         viewModelScope.launch {
             lists.save(kind, text)
-            notify("Список сохранён")
+            notify(msg(R.string.msg_list_saved))
         }
     }
 
@@ -182,7 +182,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun resetLists() {
         viewModelScope.launch {
             lists.resetToBuiltin()
-            notify("Списки восстановлены")
+            notify(msg(R.string.msg_lists_restored))
         }
     }
 
@@ -223,7 +223,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun applyParsed(result: ParseResult) {
         update { result.applyTo(it) }
-        notify("Аргументы применены")
+        notify(msg(R.string.msg_args_applied))
     }
 
     fun generatedArgs(): String = ZapretArgsParser.generate(repo.current)
@@ -327,6 +327,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun notify(message: String) {
         snackbar.value = message
     }
+
+    /**
+     * Текст всплывающего сообщения из ресурсов.
+     *
+     * Раньше такие строки были зашиты в коде по-русски, и пользователь с
+     * английским интерфейсом получал русские сообщения — при том что весь
+     * остальной интерфейс локализован.
+     */
+    private fun msg(id: Int): String = getApplication<Application>().getString(id)
 
     /** Короткое подтверждение действия (то же сообщение в snackbar). */
     fun toast(message: String) {

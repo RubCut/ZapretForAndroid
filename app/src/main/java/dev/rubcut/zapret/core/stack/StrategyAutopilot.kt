@@ -39,20 +39,39 @@ class StrategyAutopilot(private val stack: TcpStack) {
     companion object {
         val CANDIDATES: List<Pair<String, Strategy>> = listOf(
             "без обработки (прозрачно)" to Strategy(desync = DesyncMode.NONE),
-            "multisplit · середина SNI" to Strategy(desync = DesyncMode.MULTISPLIT, splitPositions = listOf(SplitPos.MIDSNI)),
+            // Комбинация FIRST + MIDSNI стоит первой среди разбиений: по опыту
+            // именно она работает на большинстве DPI. Отдельные точки по
+            // одной слабее — FIRST отрезает пустой префикс, а MIDSNI без
+            // FIRST оставляет начало записи целым.
+            "multisplit · первый байт + середина домена" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 2
+            ),
+            "multisplit · первый байт + середина домена + задержка 40 мс" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 40
+            ),
+            "multisplit · середина домена" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.MIDSNI)
+            ),
             "multisplit · первый байт" to Strategy(desync = DesyncMode.MULTISPLIT, splitPositions = listOf(SplitPos.FIRST)),
-            "multisplit · середина SNI + tlsrec" to Strategy(
+            "multisplit · первый байт + середина домена + tlsrec" to Strategy(
                 desync = DesyncMode.MULTISPLIT_TLSREC,
-                splitPositions = listOf(SplitPos.MIDSNI),
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 2,
                 tlsrecParts = 2
             ),
-            "split · середина SNI" to Strategy(desync = DesyncMode.SPLIT, splitPositions = listOf(SplitPos.MIDSNI)),
+            "split · середина домена" to Strategy(desync = DesyncMode.SPLIT, splitPositions = listOf(SplitPos.MIDSNI)),
             "tlsrec · две части" to Strategy(desync = DesyncMode.TLSREC, tlsrecParts = 2),
-            "multisplit · конец SNI" to Strategy(desync = DesyncMode.MULTISPLIT, splitPositions = listOf(SplitPos.SNIEND)),
-            "multisplit · середина SNI + задержка 40 мс" to Strategy(
+            // Точка SNIEND в одиночку бесполезна: если SNI заканчивается последним байтом
+            // приветствия (а у минимальных ClientHello так и есть), разбивать
+            // просто нечего и получается один фрагмент. Поэтому в паре с FIRST.
+            "multisplit · первый байт + конец SNI" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
-                splitPositions = listOf(SplitPos.MIDSNI),
-                splitDelayMs = 40
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.SNIEND)
             )
         )
 

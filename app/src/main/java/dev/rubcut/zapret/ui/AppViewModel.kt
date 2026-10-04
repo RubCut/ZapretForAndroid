@@ -244,6 +244,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return startTunnel(context)
     }
 
+    /**
+     * Включение туннеля с гарантией, что профиль успеет смениться.
+     *
+     * Раньше UI делал `setProfile(COMBINED)` и тут же стартовал сервис. Запись в
+     * DataStore асинхронна, сервис успевал прочитать старый профиль «Выключено»
+     * и тут же себя останавливал — первое нажатие после выбора «Выключено»
+     * выглядело как «ничего не произошло». Здесь смена профиля и запуск идут
+     * в одной корутине и строго по порядку.
+     */
+    fun startTunnelWithDefaultProfile(context: Context) {
+        if (prepareIntent(context) != null) return   // нужен диалог согласия — им займётся вызывающий
+        viewModelScope.launch {
+            if (repo.current.profile == ProfileId.OFF) {
+                repo.update { Presets.apply(ProfileId.COMBINED, it) }
+            }
+            VpnController.startNow(context)
+        }
+    }
+
     fun clearRecent() = ConnectionLog.clear()
 
     fun clearLogs() = LogManager.clear()

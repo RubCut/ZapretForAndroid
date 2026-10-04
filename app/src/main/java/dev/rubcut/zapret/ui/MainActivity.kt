@@ -22,7 +22,10 @@ class MainActivity : ComponentActivity() {
     private val vpnConsent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
-                VpnController.startNow(this)
+                // Через ту же функцию, что и кнопка: она сначала снимает профиль
+                // «Выключено» и только потом стартует сервис, иначе первое
+                // нажатие после переключения профиля не давало эффекта.
+                viewModel.startTunnelWithDefaultProfile(this)
             } else {
                 VpnController.markError(getString(R.string.err_vpn_denied))
             }

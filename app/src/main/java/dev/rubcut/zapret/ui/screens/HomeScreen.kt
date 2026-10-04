@@ -124,9 +124,16 @@ fun HomeScreen(
             vm.stopTunnel(context)
             return
         }
-        if (cfg.profile == ProfileId.OFF) vm.setProfile(ProfileId.COMBINED)
         val consent = vm.prepareIntent(context)
-        if (consent != null) onVpnPermission(consent) else vm.startTunnel(context)
+        if (consent != null) {
+            // Диалог согласия должен показаться раньше, чем мы что-то поменяем
+            // в профиле, иначе пользователь откажет — а профиль уже переключён.
+            onVpnPermission(consent)
+        } else {
+            // Смена профиля и старт — одной корутиной, иначе сервис успевал
+            // прочитать старый профиль и сразу себя остановить.
+            vm.startTunnelWithDefaultProfile(context)
+        }
     }
 
     Scaffold(

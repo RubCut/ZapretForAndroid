@@ -242,12 +242,18 @@ class TcpConnection(
 
     private suspend fun pumpToUpstream(socket: Socket) {
         val out = socket.getOutputStream()
-        val cutoff = cfg.cutoffChunks.coerceIn(1, 16)
+        // Сколько пакетов клиента копим перед применением стратегии. Раньше здесь
+        // стоял жёсткий предел в 1–16 чанков, из-за чего клиент, который дробит
+        // ClientHello на несколько сегментов (Chromium с Kyber так делает почти
+        // всегда), отдавал нам неполное рукопожатие: SNI не находился и
+        // десинхронизация не применялась вовсе.
+        val maxChunks = cfg.cutoffChunks.coerceIn(1, 64)
 
-        // Фаза 1: накапливаем стартовый блок, чтобы надёжно найти SNI или заголовок Host.
+        // Фаза 1: копим стартовый блок, пока не сойдётся первая TLS-запись
+        // (или не выберем не-TLS протокол).
         var initial: ByteArray? = null
         var chunksSeen = 0
-        while (chunksSeen < cutoff) {
+        while (chunksSeen < maxChunks) {
             val chunk = inbound.receive()
             if (chunk == null) {
                 finFromClient = true
@@ -258,8 +264,17 @@ class TcpConnection(
             if (chunk.isEmpty()) continue
             inboundBytes.addAndGet(-chunk.size)
             chunksSeen++
-            initial = if (initial == null) chunk else concat(initial, chunk)
-            if (initial.size >= MAX_INITIAL_BLOCK || blockComplete(initial)) break
+            val merged = if (initial == null) chunk else concat(initial, chunk)
+            initial = merged
+            if (merged.size >= MAX_INITIAL_BLOCK) break
+            if (blockComplete(merged)) break
+            // Не-TLS поток (HTTP и прочее) не требует ожидания: он и так не
+            // держится в буфере сколько-то чанков.
+            if (!isTlsRecord(merged)) break
+            // ClientHello пришёл не полностью. Если приложение перестанет
+            // присылать продолжение, ждать бессмысленно — но пока сегменты
+            // идут, копим: преждевременная отправка обрезанного рукопожатия
+            // ломает соединение целиком.
         }
 
         val first = initial ?: ByteArray(0)
@@ -340,6 +355,9 @@ class TcpConnection(
         }
         return true
     }
+
+    /** Похоже ли начало потока на TLS-запись (нужно, чтобы понять: ждать дальше или нет). */
+    private fun isTlsRecord(b: ByteArray): Boolean = Tls.isRecordType(b, 0, b.size)
 
     private fun concat(a: ByteArray, b: ByteArray): ByteArray {
         val out = ByteArray(a.size + b.size)

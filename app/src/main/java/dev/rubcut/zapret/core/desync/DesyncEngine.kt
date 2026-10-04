@@ -3,6 +3,7 @@ package dev.rubcut.zapret.core.desync
 import dev.rubcut.zapret.core.proto.ClientHelloInfo
 import dev.rubcut.zapret.core.proto.Http
 import dev.rubcut.zapret.core.proto.Tls
+import dev.rubcut.zapret.core.split.Segmenter
 import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
@@ -90,8 +91,14 @@ class DesyncEngine {
         val positions = raw.filter { it in 1 until payload.size }.distinct().sorted()
         if (positions.isEmpty()) return DesyncPlan.passthrough(payload, "нет точки разбиения", host)
 
+        // Ключевой момент: разбиение должно идти ПОДРЯД с точками, а не только
+        // в середину. Иначе первая точка (FIRST = 1) отсекает один байт и весь
+        // ClientHello уходит вторым сегментом целиком — DPI его склеивает и
+        // десинхронизации не происходит вовсе.
+        val ordered = orderedPositions(s, positions, hello)
+
         val single = s.desync == DesyncMode.SPLIT || s.desync == DesyncMode.TLSREC
-        val chosen = if (single) listOf(positions.first()) else positions
+        val chosen = if (single) listOf(ordered.last()) else ordered
         val writes = splitAt(payload, chosen)
         if (writes.size < 2) return DesyncPlan.passthrough(payload, "разбиение не удалось", host)
 
@@ -114,9 +121,15 @@ class DesyncEngine {
         for (pos in s.splitPositions) {
             when (pos) {
                 SplitPos.FIRST -> out += 1
+                // MIDSNI — это midsld из zapret: середина ДОМЕНА ВТОРОГО УРОВНЯ,
+                // а не середина всей строки SNI. Разница критична для YouTube,
+                // где видео идёт с CDN-хостов rr*.googlevideo.com.
                 SplitPos.MIDSNI -> when {
-                    hello != null -> out += hello.sniStart + (hello.sniEnd - hello.sniStart) / 2
-                    httpHostRange != null -> out += httpHostRange.first + (httpHostRange.second - httpHostRange.first) / 2
+                    hello != null -> out += hello.midsldOffset
+                    httpHostRange != null -> out += Tls.midsldOffset(
+                        httpHostRange.first, httpHostRange.second,
+                        String(payload, httpHostRange.first, httpHostRange.second - httpHostRange.first, Charsets.ISO_8859_1)
+                    )
                     else -> out += payload.size / 2
                 }
                 SplitPos.SNIEND -> when {
@@ -131,15 +144,33 @@ class DesyncEngine {
         return out
     }
 
-    private fun splitAt(payload: ByteArray, positions: List<Int>): List<ByteArray> {
-        val writes = ArrayList<ByteArray>()
-        var prev = 0
-        for (p in positions.sorted()) {
-            if (p <= prev || p >= payload.size) continue
-            writes += payload.copyOfRange(prev, p)
-            prev = p
+    /**
+     * Порядок точек разбиения.
+     *
+     * `split` берёт ОДНУ точку, и выбирать её надо осмысленно: точка возле начала
+     * ClientHello отрезает пустой префикс, после чего весь hello уходит вторым
+     * сегментом целиком. Поэтому для `split` берётся последняя точка — та, что
+     * стоит внутри имени хоста.
+     *
+     * Дубликаты (например `FIRST` и `custom=1`) схлопываются в одну точку.
+     */
+    private fun orderedPositions(s: Strategy, positions: List<Int>, hello: ClientHelloInfo?): List<Int> {
+        val seen = LinkedHashSet<Int>()
+        for (pos in s.splitPositions) {
+            when (pos) {
+                SplitPos.FIRST -> seen += 1
+                SplitPos.MIDSNI -> if (hello != null) seen += hello.midsldOffset else seen += -1
+                SplitPos.SNIEND -> if (hello != null) seen += hello.sniEnd else seen += -1
+                SplitPos.MIDDLE -> seen += -2
+                SplitPos.CUSTOM -> seen += s.splitCustomPos
+            }
         }
-        if (prev < payload.size) writes += payload.copyOfRange(prev, payload.size)
-        return writes
+        // Позиции, которые не удалось разрешить (SNI не найден), заменяем на
+        // середину — иначе профиль без разбора SNI не делал бы ничего.
+        val fallback = seen.map { if (it < 0) positions.last() else it }
+        return fallback.distinct()
     }
+
+    private fun splitAt(payload: ByteArray, positions: List<Int>): List<ByteArray> =
+        Segmenter.split(payload, positions)
 }

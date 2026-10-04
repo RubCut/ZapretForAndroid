@@ -16,7 +16,23 @@ class ClientHelloInfo(
     val sniEnd: Int,
     /** Полный размер TLS-записи (5 + тело). */
     val recordLength: Int
-)
+) {
+    /**
+     * Смещение середины домена второго уровня внутри буфера — аналог
+     * `--dpi-desync-split-pos=midsld` в zapret.
+     *
+     * Именно домен второго уровня важен для обхода, а не середина всей строки.
+     * У YouTube видео идёт с CDN-хостов вида `rr12---sn-4g5ednse.googlevideo.com`:
+     * середина такой строки попадает в случайный префикс (`...4g5edns|e.googlevideo.com`)
+     * и ничего не ломает — DPI склеивает сегменты и видит домен целиком. Точка
+     * разбиения обязана лежать внутри значимой части имени, то есть внутри
+     * `googlevideo.com`.
+     *
+     * Для `www.google.com` оба варианта совпадают, поэтому дефект был не виден
+     * на Google, но ломал YouTube.
+     */
+    val midsldOffset: Int by lazy { Tls.midsldOffset(sniStart, sniEnd, sni) }
+}
 
 object Tls {
 
@@ -41,6 +57,33 @@ object Tls {
     fun recordTotalLength(b: ByteArray, off: Int, len: Int): Int {
         if (len < RECORD_HEADER) return -1
         return RECORD_HEADER + getU16(b, off + 3)
+    }
+
+    /**
+     * Смещение середины домена второго уровня — аналог `midsld` из zapret.
+     *
+     * Домен второго уровня это предпоследний ярлык: для
+     * `rr12---sn-4g5ednse.googlevideo.com` это `googlevideo`. Разбиение внутри
+     * него ломает DPI именно там, где он ищет домен, тогда как разбиение в
+     * середине всей строки у CDN-хостов Google попадает в случайный префикс и
+     * остаётся бесполезным.
+     *
+     * Возвращает [fallback], если в имени меньше двух ярлыков или оно пустое.
+     */
+    fun midsldOffset(hostStart: Int, hostEnd: Int, host: String, fallback: Int = hostStart): Int {
+        val span = hostEnd - hostStart
+        if (span <= 0 || host.isEmpty()) return fallback
+        // Граница перед TLD: всё, что левее неё — домен второго уровня вместе
+        // с поддоменами.
+        val tldStart = host.lastIndexOf('.')
+        if (tldStart <= 0) return hostStart + span / 2          // домена второго уровня нет
+        // Начало именно домена второго уровня — предпоследняя точка.
+        val sldStart = host.lastIndexOf('.', tldStart - 1)
+        val sldStartIn = if (sldStart < 0) 0 else sldStart + 1
+        val sldLen = tldStart - sldStartIn
+        // Ярлык слишком короткий — делить нечего, отступаем к середине имени.
+        if (sldLen < 2) return hostStart + span / 2
+        return hostStart + sldStartIn + sldLen / 2
     }
 
     fun parseClientHello(b: ByteArray, off: Int, len: Int): ClientHelloInfo? {

@@ -30,6 +30,24 @@ object BuiltinLists {
         accounts.google.com
         lh3.googleusercontent.com
         s.youtube.com
+
+        # Домены, без которых YouTube не грузится, хотя в названии нет слов
+        # «google» или «youtube». Правило списка простое: запись без звёздочки
+        # совпадает и со всеми поддоменами, поэтому отдельные записи для
+        # rr*.googlevideo.com или *.ggpht.com не нужны — они уже покрыты
+        # строками googlevideo.com и ggpht.com выше.
+        youtubei.googleapis.com
+        youtube.googleapis.com
+        youtubekids.com
+        musics.youtube.com
+        tv.youtube.com
+        studio.youtube.com
+        redirector.googlevideo.com
+        video.google.com
+        # Реклама и статистика, на которых без неё YouTube показывает пустую страницу.
+        doubleclick.net
+        # Старый CDN YouTube, ещё используется частью клиентов.
+        edgesuite.net
     """.trimIndent()
 
     val DISCORD = """

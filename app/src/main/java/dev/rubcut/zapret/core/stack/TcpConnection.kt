@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -253,28 +254,65 @@ class TcpConnection(
         // (или не выберем не-TLS протокол).
         var initial: ByteArray? = null
         var chunksSeen = 0
-        while (chunksSeen < maxChunks) {
-            val chunk = inbound.receive()
+        loop@ while (chunksSeen < maxChunks) {
+            // Таймаут обязателен: клиент может прислать половину рукопожатия и
+            // замолчать. Без таймаута receive() ждал бы вечно, и соединение
+            // висело до общей проверки простоя — то есть минутами.
+            val chunk = withTimeoutOrNull(ASSEMBLY_WAIT_MS) { inbound.receive() }
             if (chunk == null) {
-                finFromClient = true
-                if (initial != null) writePlain(out, initial)
-                safeShutdownOutput(socket)
-                return
+                // receive() вернул null — это всегда FIN, а не «таймаут»:
+                // withTimeoutOrNull отменяет внутренний receive(), и отменённый
+                // receive() тоже даёт null. Поэтому FIN и тишину приходится
+                // различать состоянием самой очереди.
+                val queued = inbound.tryReceive()
+                if (!queued.isSuccess) {
+                    // Очередь пуста: клиент замолчал, не присылая ни данных,
+                    // ни FIN. Ждать больше нечего.
+                    if (initial != null) {
+                        // Отправляем недописанное рукопожатие и закрываем
+                        // соединение целиком. Сервер на обрезанной TLS-записи
+                        // ничего ответить не может, так что держать соединение
+                        // дальше незачем: оно зря занимает слот в maxConnections
+                        // и живёт до общего таймаута простоя (минуты).
+                        writePlain(out, initial)
+                        close()
+                    } else {
+                        // Ничего не отправляли — просто убираем соединение.
+                        safeShutdownOutput(socket)
+                        close()
+                    }
+                    return
+                }
+                val pending = queued.getOrNull()
+                if (pending == null) {
+                    // Настоящий FIN в очереди: это штатное закрытие, а не обрыв.
+                    // Полусловесное закрытие здесь корректно — сервер успевает
+                    // дописать ответ, и соединение закроется штатно.
+                    finFromClient = true
+                    if (initial != null) writePlain(out, initial)
+                    safeShutdownOutput(socket)
+                    return
+                }
+                if (pending.isEmpty()) continue@loop
+                inboundBytes.addAndGet(-pending.size)
+                chunksSeen++
+                val mergedNow = if (initial == null) pending else concat(initial, pending)
+                initial = mergedNow
+                if (mergedNow.size >= MAX_INITIAL_BLOCK) break@loop
+                if (blockComplete(mergedNow)) break@loop
+                if (!isTlsRecord(mergedNow)) break@loop
+                continue@loop
             }
-            if (chunk.isEmpty()) continue
+            if (chunk.isEmpty()) continue@loop
             inboundBytes.addAndGet(-chunk.size)
             chunksSeen++
             val merged = if (initial == null) chunk else concat(initial, chunk)
             initial = merged
-            if (merged.size >= MAX_INITIAL_BLOCK) break
-            if (blockComplete(merged)) break
+            if (merged.size >= MAX_INITIAL_BLOCK) break@loop
+            if (blockComplete(merged)) break@loop
             // Не-TLS поток (HTTP и прочее) не требует ожидания: он и так не
             // держится в буфере сколько-то чанков.
-            if (!isTlsRecord(merged)) break
-            // ClientHello пришёл не полностью. Если приложение перестанет
-            // присылать продолжение, ждать бессмысленно — но пока сегменты
-            // идут, копим: преждевременная отправка обрезанного рукопожатия
-            // ломает соединение целиком.
+            if (!isTlsRecord(merged)) break@loop
         }
 
         val first = initial ?: ByteArray(0)
@@ -734,5 +772,18 @@ class TcpConnection(
         const val MAX_RETRANSMITS = 9
         const val MAX_INITIAL_BLOCK = 32 * 1024
         const val INBOUND_LIMIT = 1024 * 1024
+
+        /**
+         * Сколько ждём следующий сегмент, пока собираем ClientHello.
+         *
+         * Раньше ожидание было бесконечным: клиент, приславший часть
+         * рукопожатия и замолчавший, держал соединение открытым до общей
+         * проверки простоя — а это минуты. Теперь тишина означает «дописывать
+         * нечего», и мы отправляем что есть.
+         *
+         * Значение с запасом больше времени сборки ClientHello несколькими
+         * сегментами: обычно это десятки миллисекунд.
+         */
+        const val ASSEMBLY_WAIT_MS = 4000L
     }
 }

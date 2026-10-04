@@ -81,10 +81,15 @@
             android:name=".service.BootReceiver"
             android:enabled="true"
             android:exported="true">
+            <!--
+              LOCKED_BOOT_COMPLETED здесь намеренно нет: действие приходит
+              только directBootAware-приложениям, а наше таковым не является
+              (списки лежат в filesDir, они недоступны до разблокировки).
+              Фильтр был мёртвым и только обещал автозапуск раньше времени.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
     </application>

@@ -536,8 +536,16 @@ class ZapretVpnService : VpnService() {
                         LogManager.w("Проверка связи: $host — имя не разрешилось, соединение не проверялось")
                         continue
                     }
+                    // Стратегия берётся тем же резолвером, что и для настоящего трафика. Иначе
+                    // проверка врёт: правила для хоста не применялись бы, и
+                    // зонд показывал бы обход там, где его нет, или наоборот.
+                    val decision = try {
+                        stack.resolveFor(443, host, addr, 0)
+                    } catch (e: Exception) {
+                        null
+                    }
                     val ok = try {
-                        autopilot.probe(addr, 443, host, cfg.toStrategy(), 9000)
+                        autopilot.probe(addr, 443, host, decision?.strategy ?: cfg.toStrategy(), 9000)
                     } catch (e: Exception) {
                         LogManager.w("Проверка связи: $host — сбой зонда: ${e.message}")
                         false
@@ -545,7 +553,7 @@ class ZapretVpnService : VpnService() {
                     if (ok) {
                         LogManager.i(LogTag.VPN, "Проверка связи: $host (${addr.hostAddress}) — TLS ServerHello получен, трафик проходит")
                     } else {
-                        LogManager.w("Проверка связи: $host (${addr.hostAddress}) — ответа сервера НЕТ (стратегия: ${cfg.desync}, pos=${cfg.splitPositions})")
+                        LogManager.w("Проверка связи: $host (${addr.hostAddress}) — ответа сервера НЕТ (правило: ${decision?.reason ?: "общая стратегия"})")
                     }
                 }
             }

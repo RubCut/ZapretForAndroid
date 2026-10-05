@@ -99,14 +99,16 @@ class DesyncEngine {
         // работает и при выключенном десинхронизме. Дальше любая ветка, где
         // разбить нечего, обязана отдать изменённые байты целиком, иначе приём
         // молча потеряется.
+        // Разделитель в конце: lead всегда либо пуст, либо уже готов к склейке с
+        // названием техники — иначе надписи в журнале слипаются.
         val lead = when {
-            poison != null && mixed -> "отравление DPI + смена регистра"
-            poison != null -> "отравление DPI"
-            mixed -> "смена регистра в имени хоста"
+            poison != null && mixed -> "отравление DPI + смена регистра + "
+            poison != null -> "отравление DPI + "
+            mixed -> "смена регистра + "
             else -> ""
         }
         fun giveUp(reason: String) =
-            if (lead.isNotEmpty()) DesyncPlan(listOf(data), true, lead, host, poison, s.poisonDelayMs)
+            if (lead.isNotEmpty()) DesyncPlan(listOf(data), true, lead.trim(), host, poison, s.poisonDelayMs)
             else DesyncPlan.passthrough(payload, reason, host)
 
         if (s.desync == DesyncMode.NONE) return giveUp("off")
@@ -158,7 +160,9 @@ class DesyncEngine {
         if (writes.size < 2) return giveUp("разбиение не удалось")
 
         val label = buildString {
-            append(lead.ifEmpty { if (mixed) "смена регистра + " else "" })
+            // Разделитель обязателен, иначе надпись склеивается: «смена регистра в имени
+            // хостаmultisplit».
+            append(lead)
             append(if (single) "split" else "multisplit")
             append(" [").append(chosen.joinToString(",")).append("] → ")
             append(writes.size).append(" сегм.")

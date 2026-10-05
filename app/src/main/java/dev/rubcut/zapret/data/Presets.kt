@@ -100,7 +100,7 @@ object Presets {
                 strategy = Strategy(
                     desync = MULTISPLIT,
                     splitPositions = listOf(MIDSNI),
-                    splitDelayMs = 2,
+                    splitDelayMs = 2
                 )
             )
         )
@@ -154,13 +154,20 @@ object Presets {
                 desync = MULTISPLIT,
                 splitPositions = listOf(FIRST, MIDSNI),
                 splitDelayMs = 2,
+                // Смена регистра включена только здесь. Замеры с устройства:
+                // www.youtube.com и youtubei.googleapis.com со сменой регистра
+                // проходят, без неё блокируются; www.google.com работает в обоих
+                // случаях. А Cloudflare рвёт соединение на изменённом регистре —
+                // поэтому приём живёт на правиле с источником Google, а не
+                // глобально, иначе ломался бы и Discord, и любой сайт за ним.
+                sniCaseMix = true
             )
         ),
         StrategyRule(
             name = "YouTube / Google · HTTP",
             tcpPorts = HTTP_PORTS,
             hostSource = GOOGLE,
-            strategy = Strategy(desync = HOSTFAKESPLIT, splitDelayMs = 2)
+            strategy = Strategy(desync = HOSTFAKESPLIT, splitDelayMs = 2, sniCaseMix = true)
         )
     )
 

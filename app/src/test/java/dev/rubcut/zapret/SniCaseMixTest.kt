@@ -225,10 +225,17 @@ class SniCaseMixTest {
                 "ни одна сегментация не работает",
             StrategyAutopilot.CANDIDATES.any { it.second.sniCaseMix }
         )
-        val firstActive = StrategyAutopilot.CANDIDATES.first { it.second.desync != DesyncMode.NONE }
+// Первым среди активных идёт отравление DPI: против фильтра с полной
+        // пересборкой сегментов не работает вообще ничего, кроме него. Поэтому
+        // проверяем, что смена регистра идёт следом, а не раньше.
+        val idx = StrategyAutopilot.CANDIDATES.indexOfFirst { it.second.sniCaseMix }
+        assertTrue("смена регистра обязана быть среди кандидатов", idx >= 0)
+        val before = StrategyAutopilot.CANDIDATES.take(idx)
+            .any { it.second.desync != DesyncMode.NONE || it.second.poisonEnabled }
         assertTrue(
-            "смена регистра должна проверяться первой среди активных вариантов: ${firstActive.first}",
-            firstActive.second.sniCaseMix
+            "отравление DPI обязано проверяться раньше смены регистра: разбиение и смена " +
+                "регистра против фильтра с пересборкой сегментов бесполезны",
+            before
         )
     }
 

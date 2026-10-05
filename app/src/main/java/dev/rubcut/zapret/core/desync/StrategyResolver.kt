@@ -76,7 +76,14 @@ class StrategyResolver(
             }
         }
 
-        return Decision(cfg.toStrategy().copy(sniCaseMix = cfg.sniCaseMix), null, "общая стратегия профиля")
+        return Decision(
+            cfg.toStrategy().copy(
+                sniCaseMix = cfg.sniCaseMix,
+                poisonEnabled = cfg.poisonEnabled,
+                poisonSni = cfg.poisonSni,
+                poisonDelayMs = cfg.poisonDelayMs
+            ), null, "общая стратегия профиля"
+        )
     }
 
     /**

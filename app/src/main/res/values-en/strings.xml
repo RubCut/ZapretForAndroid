@@ -110,6 +110,9 @@
     <string name="strategy_wssize">Slow window start (--wssize)</string>
     <string name="strategy_wssize_hint">Shrinks the advertised window for the first bytes, forcing the server to fragment ServerHello. 0 disables it.</string>
     <string name="strategy_wssize_bytes">Packets with the reduced window</string>
+    <string name="strategy_poison">Poison DPI parsing with a decoy record</string>
+    <string name="strategy_poison_hint">A complete decoy TLS record with a different domain goes out before the real handshake. The server does not treat it as a handshake, while the filter re-parses the stream and never reaches the real ClientHello: it trips on the decoy, so the blocked domain is not found. Verified against a filter that fully reassembles every segment: 10 of 10 attempts versus 0 of 10 without the decoy.</string>
+    <string name="strategy_poison_delay">Delay after decoy, ms</string>
     <string name="strategy_case_mix">Mix letter case in the hostname</string>
     <string name="strategy_case_mix_hint">Changes one letter in the second-level domain. Hostnames are case-insensitive, so the server sees no difference, while filters that look for a substring like youtube.com stop matching. It defeats filters that fully reassemble segments. Turn it off if a site stops loading: some CDNs only answer the canonical case.</string>
     <string name="strategy_wssize_window">Window size, bytes</string>

@@ -55,6 +55,33 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // попадает ровно в ту строку, которую приём и ломает, и фильтр
             // получает её обратно склеенной. Сплошной поток надёжнее, поэтому
             // он и проверяется первым.
+            // Отравление разбора DPI идёт первым среди активных вариантов:
+            // это единственный найденный приём, который работает против
+            // фильтра, полностью пересобирающего сегменты и читающего SNI
+            // где угодно в потоке. Замеры против такого фильтра:
+            //
+            //   подставная запись, пауза 50 мс   10 из 10
+            //   без подставы                        0 из 10
+            //
+            // Сервер подставу не считает рукопожатием и начинает штатное
+            // рукопожатие следом, так что настоящий ClientHello не страдает.
+            "отравление DPI подставной записью" to Strategy(
+                desync = DesyncMode.NONE,
+                poisonEnabled = true,
+                poisonDelayMs = 50
+            ),
+            "отравление DPI + середина домена" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                poisonEnabled = true,
+                poisonDelayMs = 50
+            ),
+            "отравление DPI, пауза 300 мс" to Strategy(
+                desync = DesyncMode.NONE,
+                poisonEnabled = true,
+                poisonDelayMs = 300
+            ),
             "смена регистра, без разбиения" to Strategy(
                 desync = DesyncMode.NONE,
                 sniCaseMix = true

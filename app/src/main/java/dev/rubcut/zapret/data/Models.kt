@@ -196,6 +196,12 @@ data class AppConfig(
      * [Strategy.sniCaseMix].
      */
     val sniCaseMix: Boolean = false,
+    /** Отравление разбора DPI подставной записью; см. [Strategy.poisonEnabled]. */
+    val poisonEnabled: Boolean = false,
+    /** Домен в подставной записи; пусто — домен по умолчанию. */
+    val poisonSni: String = "",
+    /** Пауза между подставой и настоящими данными, мс. */
+    val poisonDelayMs: Int = 50,
 
     // Фильтры
     val tcpPorts: String = "80,443,2053,2082,2083,2086,2087,2095,2096,8443",
@@ -249,7 +255,10 @@ data class AppConfig(
         wssizePackets = wssizePackets,
         wssizeWindow = wssizeWindow,
         anyProtocol = anyProtocol,
-        sniCaseMix = sniCaseMix
+        sniCaseMix = sniCaseMix,
+        poisonEnabled = poisonEnabled,
+        poisonSni = poisonSni,
+        poisonDelayMs = poisonDelayMs
     )
 
     fun toJson(): JSONObject {
@@ -273,6 +282,9 @@ data class AppConfig(
         o.put("wssizeWindow", wssizeWindow)
         o.put("anyProtocol", anyProtocol)
         o.put("sniCaseMix", sniCaseMix)
+        o.put("poisonEnabled", poisonEnabled)
+        o.put("poisonSni", poisonSni)
+        o.put("poisonDelayMs", poisonDelayMs)
 
         o.put("tcpPorts", tcpPorts)
         o.put("udpPorts", udpPorts)
@@ -337,6 +349,9 @@ data class AppConfig(
                 wssizeWindow = o.optInt("wssizeWindow", d.wssizeWindow),
                 anyProtocol = o.optBoolean("anyProtocol", d.anyProtocol),
                 sniCaseMix = o.optBoolean("sniCaseMix", d.sniCaseMix),
+                poisonEnabled = o.optBoolean("poisonEnabled", d.poisonEnabled),
+                poisonSni = o.optString("poisonSni", d.poisonSni),
+                poisonDelayMs = o.optInt("poisonDelayMs", d.poisonDelayMs),
 
                 tcpPorts = o.optString("tcpPorts", d.tcpPorts),
                 udpPorts = o.optString("udpPorts", d.udpPorts),

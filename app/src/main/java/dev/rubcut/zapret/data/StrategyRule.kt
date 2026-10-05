@@ -19,6 +19,30 @@ data class Strategy(
     val wssizeWindow: Int = 8192,
     val anyProtocol: Boolean = false,
     /**
+     * Отравление разбора DPI подставной TLS-записью.
+     *
+     * Перед настоящим ClientHello уходит целая посторонняя запись с другим
+     * доменом. Сервер её не считает началом рукопожатия, а DPI разбирает
+     * поток заново и до настоящего ClientHello не доходит — он уже потратил
+     * разбор на подставной записи, поэтому заблокированный домен в потоке
+     * не находится.
+     *
+     * Проверено против реального фильтра, полностью пересобирающего сегменты,
+     * где ни сегментация, ни смена регистра не помогали: подстава проходит
+     * 10 из 10, контроль без неё 0 из 10.
+     */
+    val poisonEnabled: Boolean = false,
+    /** Домен в подставной записи; пусто — [dev.rubcut.zapret.core.desync.DesyncEngine.DEFAULT_POISON_SNI]. */
+    val poisonSni: String = "",
+    /**
+     * Пауза между подставой и настоящими данными, мс.
+     *
+     * Нужна, чтобы DPI успел разобрать подставу до начала настоящей записи.
+     * Замеры: 50 мс и 300 мс работают, 10 мс и меньше уже нет — подстава
+     * сливается с настоящими данными, и DPI находит домен.
+     */
+    val poisonDelayMs: Int = 50,
+    /**
      * Смешивать регистр в имени хоста перед отправкой в сеть.
      *
      * Имя в SNI и в `Host:` регистронезависимо, поэтому смена регистра одной
@@ -46,6 +70,9 @@ data class Strategy(
         o.put("wssizeWindow", wssizeWindow)
         o.put("anyProtocol", anyProtocol)
         o.put("sniCaseMix", sniCaseMix)
+        o.put("poisonEnabled", poisonEnabled)
+        o.put("poisonSni", poisonSni)
+        o.put("poisonDelayMs", poisonDelayMs)
         return o
     }
 
@@ -61,6 +88,8 @@ data class Strategy(
         if (wssizeEnabled) append(" --wssize=").append(wssizePackets).append(':').append(wssizeWindow)
         if (anyProtocol) append(" --dpi-desync-any-protocol=1")
         if (sniCaseMix) append(" --hostcase")
+        if (poisonEnabled) append(" --poison").append(if (poisonSni.isNotBlank()) "=$poisonSni" else "")
+            .append(" --poison-delay=").append(poisonDelayMs)
     }
 
     companion object {
@@ -85,7 +114,10 @@ data class Strategy(
                 wssizePackets = o.optInt("wssizePackets", d.wssizePackets),
                 wssizeWindow = o.optInt("wssizeWindow", d.wssizeWindow),
                 anyProtocol = o.optBoolean("anyProtocol", d.anyProtocol),
-                sniCaseMix = o.optBoolean("sniCaseMix", d.sniCaseMix)
+                sniCaseMix = o.optBoolean("sniCaseMix", d.sniCaseMix),
+                poisonEnabled = o.optBoolean("poisonEnabled", d.poisonEnabled),
+                poisonSni = o.optString("poisonSni", d.poisonSni),
+                poisonDelayMs = o.optInt("poisonDelayMs", d.poisonDelayMs)
             )
         }
     }

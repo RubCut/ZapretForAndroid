@@ -112,6 +112,65 @@ object Tls {
      *
      * @return копия [b] с изменённым регистром либо null, если менять нечего.
      */
+    /**
+     * Собирает посторонний ClientHello для отравления разбора DPI.
+     *
+     * Приём: перед настоящим рукопожатием уходит целый чужой ClientHello, который
+     * сервер не считает началом рукопожатия. DPI при этом разбирает поток заново,
+     * до настоящего ClientHello не доходит — он уже потратил разбор на подставной,
+     * поэтому заблокированный домен в потоке не находится.
+     *
+     * Ключевое условие, найденное замерами против реального фильтра: подстава
+     * обязана быть **целой записью**. Обрезанный вариант (111 байт вместо 112)
+     * не помогает вовсе — сервер отвечает на него RST, потому что не может
+     * разобрать недописанное рукопожатие, и соединение рвётся раньше, чем DPI
+     * что-либо решит. Настоящий ClientHello при этом не меняется и уходит следом
+     * как обычно.
+     *
+     * @param sni домен в подставной записи, читается как обычный.
+     */
+    fun poisonHello(sni: String): ByteArray {
+        val name = sni.toByteArray(Charsets.US_ASCII)
+        val entry = 1 + 2 + name.size
+        // server_name: длина списка, тип host_name, длина имени, имя.
+// Длина списка покрывает всё после себя, поэтому это 1 + 2 + размер имени.
+        val sniExt = u16(entry) + byteArrayOf(0) + u16(name.size) + name
+
+        val suites = intArrayOf(0xC02F, 0xC030, 0x009C, 0x009D)
+        val sigs = intArrayOf(0x0403, 0x0503, 0x0603, 0x0401)
+        val suitesBytes = ByteArray(suites.size * 2) { i ->
+            val v = suites[i / 2]
+            if (i % 2 == 0) (v shr 8 and 0xFF).toByte() else (v and 0xFF).toByte()
+        }
+        val sigBytes = ByteArray(sigs.size * 2) { i ->
+            val v = sigs[i / 2]
+            if (i % 2 == 0) (v shr 8 and 0xFF).toByte() else (v and 0xFF).toByte()
+        }
+        val extensions = u16(0x0000) + u16(sniExt.size) + sniExt +
+            u16(0x000B) + u16(3) + byteArrayOf(0x02, 0x01, 0x00) +
+            // signature_algorithms: длина списка идёт ПЕРЕД схемами, без неё
+            // расширение на два байта короче положенного и не разбирается.
+            u16(0x000A) + u16(6) + u16(4) + u16(0x001D) + u16(0x0017) +
+            u16(0x000D) + u16(2 + sigBytes.size) + u16(sigBytes.size) + sigBytes
+        val body = byteArrayOf(0x03, 0x03) + ByteArray(32) + byteArrayOf(0) +
+            u16(suitesBytes.size) + suitesBytes +
+            byteArrayOf(0x01, 0x00) + u16(extensions.size) + extensions
+        val handshake = byteArrayOf(
+            0x01,
+            (body.size shr 16 and 0xFF).toByte(),
+            (body.size shr 8 and 0xFF).toByte(),
+            (body.size and 0xFF).toByte()
+        ) + body
+        return byteArrayOf(0x16, 0x03, 0x01) +
+            byteArrayOf(
+                (handshake.size shr 8 and 0xFF).toByte(),
+                (handshake.size and 0xFF).toByte()
+            ) + handshake
+    }
+
+    private fun u16(v: Int): ByteArray =
+        byteArrayOf((v shr 8 and 0xFF).toByte(), (v and 0xFF).toByte())
+
     fun mixCaseInSld(b: ByteArray, hostStart: Int, hostEnd: Int, host: String): ByteArray? {
         val span = hostEnd - hostStart
         if (span <= 0 || host.isEmpty()) return null

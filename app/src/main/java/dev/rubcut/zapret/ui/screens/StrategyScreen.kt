@@ -190,7 +190,10 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                                     wssizePackets = s.wssizePackets,
                                     wssizeWindow = s.wssizeWindow,
                                     anyProtocol = s.anyProtocol,
-                                    sniCaseMix = s.sniCaseMix
+                                    sniCaseMix = s.sniCaseMix,
+                                    poisonEnabled = s.poisonEnabled,
+                                    poisonSni = s.poisonSni,
+                                    poisonDelayMs = s.poisonDelayMs
                                 )
                             }
                         }
@@ -420,6 +423,21 @@ fun StrategyControls(strategy: Strategy, onChange: (Strategy) -> Unit) {
         checked = strategy.anyProtocol,
         onCheckedChange = { v -> onChange(strategy.copy(anyProtocol = v)) }
     )
+    SwitchRow(
+        title = stringResource(R.string.strategy_poison),
+        checked = strategy.poisonEnabled,
+        onCheckedChange = { v -> onChange(strategy.copy(poisonEnabled = v)) },
+        subtitle = stringResource(R.string.strategy_poison_hint)
+    )
+    if (strategy.poisonEnabled) {
+        SliderRow(
+            title = stringResource(R.string.strategy_poison_delay),
+            value = strategy.poisonDelayMs.toFloat().coerceIn(0f, 500f),
+            valueRange = 0f..500f,
+            onValueChange = { v -> onChange(strategy.copy(poisonDelayMs = v.toInt())) },
+            format = { "${it.toInt()} мс" }
+        )
+    }
     SwitchRow(
         title = stringResource(R.string.strategy_case_mix),
         checked = strategy.sniCaseMix,

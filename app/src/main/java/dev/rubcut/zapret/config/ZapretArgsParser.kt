@@ -20,6 +20,7 @@ class ParseResult(
     val cutoffChunks: Int?,
     val anyProtocol: Boolean?,
     val sniCaseMix: Boolean? = null,
+    val poisonEnabled: Boolean? = null,
     val supported: List<String>,
     val ignored: List<String>,
     val unknown: List<String>,
@@ -44,6 +45,9 @@ class ParseResult(
         wssizeWindow = defaultStrategy?.wssizeWindow ?: base.wssizeWindow,
         anyProtocol = anyProtocol ?: defaultStrategy?.anyProtocol ?: base.anyProtocol,
         sniCaseMix = sniCaseMix ?: defaultStrategy?.sniCaseMix ?: base.sniCaseMix,
+        poisonEnabled = poisonEnabled ?: defaultStrategy?.poisonEnabled ?: base.poisonEnabled,
+        poisonSni = defaultStrategy?.poisonSni?.takeIf { it.isNotBlank() } ?: base.poisonSni,
+        poisonDelayMs = defaultStrategy?.poisonDelayMs ?: base.poisonDelayMs,
         cutoffChunks = cutoffChunks ?: base.cutoffChunks
     )
 }
@@ -96,7 +100,7 @@ object ZapretArgsParser {
         if (tokens.isEmpty()) return ParseResult(
             rules = emptyList(), globalTcpPorts = null, globalUdpPorts = null,
             hostlistMode = null, ipsetMode = null, defaultStrategy = null,
-            cutoffChunks = null, anyProtocol = null, sniCaseMix = null,
+            cutoffChunks = null, anyProtocol = null, sniCaseMix = null, poisonEnabled = null,
             supported = supported, ignored = ignored, unknown = unknown, errors = errors
         )
 
@@ -108,6 +112,7 @@ object ZapretArgsParser {
         var cutoff: Int? = null
         var anyProtocol: Boolean? = null
         var sniCaseMix: Boolean? = null
+        var poisonEnabled: Boolean? = null
 
         var curTcp = ""
         var curUdp = ""
@@ -124,6 +129,9 @@ object ZapretArgsParser {
         var curWssizeWindow = base.wssizeWindow
         var curAnyProto = base.anyProtocol
         var curCaseMix = base.sniCaseMix
+        var curPoison = base.poisonEnabled
+        var curPoisonSni = base.poisonSni
+        var curPoisonDelay = base.poisonDelayMs
         var ruleName = ""
 
         fun flush() {
@@ -138,7 +146,10 @@ object ZapretArgsParser {
                 wssizePackets = curWssizePackets,
                 wssizeWindow = curWssizeWindow,
                 anyProtocol = curAnyProto,
-                sniCaseMix = curCaseMix
+                sniCaseMix = curCaseMix,
+                poisonEnabled = curPoison,
+                poisonSni = curPoisonSni,
+                poisonDelayMs = curPoisonDelay
             )
             rules += StrategyRule(
                 name = ruleName.ifBlank { defaultRuleName(curTcp, curUdp, curDesync) },
@@ -155,6 +166,9 @@ object ZapretArgsParser {
             curPositions = ArrayList()
             curAnyProto = base.anyProtocol
             curCaseMix = base.sniCaseMix
+            curPoison = base.poisonEnabled
+            curPoisonSni = base.poisonSni
+            curPoisonDelay = base.poisonDelayMs
             ruleName = ""
         }
 
@@ -216,6 +230,25 @@ object ZapretArgsParser {
                     curCaseMix = true
                     sniCaseMix = true
                     supported += "--hostcase (смена регистра в имени хоста)"
+                }
+                k == "--poison" -> {
+                    curPoison = true
+                    poisonEnabled = true
+                    // Значение после --poison, если оно есть, — домен подставы.
+                    if (!value.isNullOrBlank() && !value.startsWith("-") && value.contains('.')) {
+                        curPoisonSni = value.trim()
+                    }
+                    supported += "--poison (подставная запись перед рукопожатием)"
+                }
+                k == "--poison-sni" -> {
+                    val d = value?.trim()
+                    if (!d.isNullOrBlank() && d.contains('.')) curPoisonSni = d
+                    else errors += "--poison-sni требует домен, получено «${value ?: ""}»"
+                }
+                k == "--poison-delay" -> {
+                    val n = value?.trim()?.toIntOrNull()
+                    if (n != null && n >= 0) curPoisonDelay = n
+                    else errors += "--poison-delay требует целое число мс, получено «${value ?: ""}»"
                 }
                 k == "--dpi-desync-cutoff" -> {
                     val n = value?.trim()?.trimStart('n', 'd')?.toIntOrNull()
@@ -282,6 +315,7 @@ object ZapretArgsParser {
             cutoffChunks = cutoff,
             anyProtocol = anyProtocol,
             sniCaseMix = sniCaseMix,
+            poisonEnabled = poisonEnabled,
             supported = supported.distinct(),
             ignored = ignored.distinct(),
             unknown = unknown.distinct(),

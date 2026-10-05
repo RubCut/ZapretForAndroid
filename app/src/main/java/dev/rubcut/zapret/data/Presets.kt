@@ -40,6 +40,8 @@ object Presets {
         tlsrecParts = 0,
         wssizeEnabled = false,
         anyProtocol = false,
+        poisonEnabled = true,
+        poisonDelayMs = 50,
         tcpPorts = "$TLS_PORTS,$HTTP_PORTS",
         udpPorts = "443",
         hostlistMode = HostlistMode.INCLUDE,
@@ -62,6 +64,8 @@ object Presets {
         tlsrecParts = 0,
         wssizeEnabled = false,
         anyProtocol = false,
+        poisonEnabled = true,
+        poisonDelayMs = 50,
         tcpPorts = "$TLS_PORTS,$HTTP_PORTS",
         udpPorts = DISCORD_UDP,
         hostlistMode = HostlistMode.INCLUDE,
@@ -83,6 +87,8 @@ object Presets {
         tlsrecParts = 0,
         wssizeEnabled = false,
         anyProtocol = false,
+        poisonEnabled = true,
+        poisonDelayMs = 50,
         tcpPorts = "$TLS_PORTS,$HTTP_PORTS",
         udpPorts = "443,$DISCORD_UDP",
         hostlistMode = HostlistMode.INCLUDE,
@@ -100,7 +106,9 @@ object Presets {
                 strategy = Strategy(
                     desync = MULTISPLIT,
                     splitPositions = listOf(MIDSNI),
-                    splitDelayMs = 2
+                    splitDelayMs = 2,
+                    poisonEnabled = true,
+                    poisonDelayMs = 50
                 )
             )
         )
@@ -117,6 +125,8 @@ object Presets {
         wssizePackets = 6,
         wssizeWindow = 8192,
         anyProtocol = true,
+        poisonEnabled = true,
+        poisonDelayMs = 50,
         tcpPorts = "1-65535",
         udpPorts = "443,$DISCORD_UDP",
         hostlistMode = HostlistMode.INCLUDE,
@@ -153,14 +163,16 @@ object Presets {
             strategy = Strategy(
                 desync = MULTISPLIT,
                 splitPositions = listOf(FIRST, MIDSNI),
-                splitDelayMs = 2
+                splitDelayMs = 2,
+                poisonEnabled = true,
+                poisonDelayMs = 50
             )
         ),
         StrategyRule(
             name = "YouTube / Google · HTTP",
             tcpPorts = HTTP_PORTS,
             hostSource = GOOGLE,
-            strategy = Strategy(desync = HOSTFAKESPLIT, splitDelayMs = 2)
+            strategy = Strategy(desync = HOSTFAKESPLIT, splitDelayMs = 2, poisonEnabled = true, poisonDelayMs = 50)
         )
     )
 
@@ -172,7 +184,9 @@ object Presets {
             strategy = Strategy(
                 desync = MULTISPLIT,
                 splitPositions = listOf(FIRST, MIDSNI),
-                splitDelayMs = 2
+                splitDelayMs = 2,
+                poisonEnabled = true,
+                poisonDelayMs = 50
             )
         ),
         StrategyRule(

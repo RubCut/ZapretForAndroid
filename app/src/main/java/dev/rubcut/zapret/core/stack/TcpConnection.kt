@@ -356,6 +356,19 @@ class TcpConnection(
         }
 
         val plan = stack.engine.plan(payload, ctx, strategy)
+
+        // Подставная запись уходит отдельной записью ДО настоящих данных и с
+        // паузой после: DPI должен успеть разобрать её и споткнуться, пока
+        // настоящий ClientHello ещё не начал приходить. Без паузы замеры
+        // показывают обратное — подстава сливается с настоящей записью, DPI
+        // разбирает обе вместе и находит заблокированный домен.
+        plan.poison?.let { poison ->
+            out.write(poison)
+            out.flush()
+            TrafficStats.up(poison.size)
+            if (plan.poisonDelayMs > 0) delay(plan.poisonDelayMs.toLong())
+        }
+
         for ((index, write) in plan.writes.withIndex()) {
             out.write(write)
             out.flush()

@@ -23,9 +23,23 @@ class DesyncPlan(
     val writes: List<ByteArray>,
     val applied: Boolean,
     val technique: String,
-    val host: String?
+    val host: String?,
+    /**
+     * Запись-подстава, отправляемая перед основными.
+     *
+     * Отдельно от [writes], потому что у неё другой смысл и другое время жизни:
+     * сервер её не считает рукопожатием, а DPI на ней спотыкается. Её нельзя
+     * смешивать с фрагментами настоящего ClientHello — иначе потеряется и
+     * подстава, и разбиение.
+     */
+    val poison: ByteArray? = null,
+    /** Пауза между подставой и настоящими данными, мс. */
+    val poisonDelayMs: Int = 0
 ) {
     val segmentCount: Int get() = writes.size
+
+    /** Подставу не считаем фрагментом: она идёт отдельной записью до [writes]. */
+    val totalWrites: Int get() = writes.size + (if (poison != null) 1 else 0)
 
     companion object {
         fun passthrough(payload: ByteArray, technique: String, host: String? = null) =
@@ -74,12 +88,25 @@ class DesyncEngine {
             }
         }
 
+        // Отравление разбора DPI: сперва уходит целая посторонняя запись,
+        // настоящие данные — следом. Приём самостоятельный, поэтому переживает
+        // и ветки, где разбить нечего.
+        val poison = if (s.poisonEnabled && isTls && hello != null) {
+            Tls.poisonHello(s.poisonSni.ifBlank { DEFAULT_POISON_SNI })
+        } else null
+
         // Смена регистра — самостоятельный приём, а не часть разбиения, поэтому
         // работает и при выключенном десинхронизме. Дальше любая ветка, где
         // разбить нечего, обязана отдать изменённые байты целиком, иначе приём
         // молча потеряется.
+        val lead = when {
+            poison != null && mixed -> "отравление DPI + смена регистра"
+            poison != null -> "отравление DPI"
+            mixed -> "смена регистра в имени хоста"
+            else -> ""
+        }
         fun giveUp(reason: String) =
-            if (mixed) DesyncPlan(listOf(data), true, "смена регистра в имени хоста", host)
+            if (lead.isNotEmpty()) DesyncPlan(listOf(data), true, lead, host, poison, s.poisonDelayMs)
             else DesyncPlan.passthrough(payload, reason, host)
 
         if (s.desync == DesyncMode.NONE) return giveUp("off")
@@ -93,7 +120,10 @@ class DesyncEngine {
                 val bounds = Tls.recordBoundaries(repacked, 0, repacked.size)
                 val writes = splitAt(repacked, bounds.filter { it in 1 until repacked.size })
                 if (writes.size >= 2) {
-                    return DesyncPlan(writes, true, "tlsrec x$parts → ${writes.size} записей", host)
+                    return DesyncPlan(
+                        writes, true, "${lead}tlsrec x$parts → ${writes.size} записей", host,
+                        poison, s.poisonDelayMs
+                    )
                 }
             }
         }
@@ -128,13 +158,13 @@ class DesyncEngine {
         if (writes.size < 2) return giveUp("разбиение не удалось")
 
         val label = buildString {
-            if (mixed) append("смена регистра + ")
+            append(lead.ifEmpty { if (mixed) "смена регистра + " else "" })
             append(if (single) "split" else "multisplit")
             append(" [").append(chosen.joinToString(",")).append("] → ")
             append(writes.size).append(" сегм.")
             if (host != null) append(" sni=").append(host)
         }
-        return DesyncPlan(writes, true, label, host)
+        return DesyncPlan(writes, true, label, host, poison, s.poisonDelayMs)
     }
 
     private fun collectPositions(
@@ -199,4 +229,15 @@ class DesyncEngine {
 
     private fun splitAt(payload: ByteArray, positions: List<Int>): List<ByteArray> =
         Segmenter.split(payload, positions)
+
+    companion object {
+        /**
+         * Домен в подставной записи.
+         *
+         * Он должен выглядеть обычным и не быть в списках блокировки: DPI
+         * разбирает его первым и на нём спотыкается, а до заблокированного
+         * домена в потоке уже не доходит.
+         */
+        const val DEFAULT_POISON_SNI = "www.google.com"
+    }
 }

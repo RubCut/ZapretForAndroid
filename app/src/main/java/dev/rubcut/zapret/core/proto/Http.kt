@@ -55,22 +55,21 @@ object Http {
     /**
      * Меняет регистр одной буквы в домене втором уровне значения `Host`.
      *
-     * Приём тот же, что и для TLS SNI (см. [Tls.mixCaseInSld]): имя хоста в
+     * Приём тот же, что и для TLS SNI (см. [Tls.mixFirstLabel]): имя хоста в
      * HTTP регистронезависимо по RFC 7230, а фильтры ищут его подстрокой.
      * Длина не меняется, поэтому разбирать запрос заново не нужно.
      *
      * @return копия [b] либо null, если менять нечего.
      */
-    fun mixCaseInHost(b: ByteArray, hostStart: Int, hostEnd: Int): ByteArray? {
+    fun mixFirstHostLabel(b: ByteArray, hostStart: Int, hostEnd: Int): ByteArray? {
         val span = hostEnd - hostStart
         if (span <= 0) return null
         val host = String(b, hostStart, span, Charsets.ISO_8859_1)
-        val tldStart = host.lastIndexOf('.')
-        if (tldStart <= 0) return null
-        val sldStart = host.lastIndexOf('.', tldStart - 1)
-        val from = if (sldStart < 0) 0 else sldStart + 1
-        if (tldStart - from < 2) return null
-        val idx = (from until tldStart).firstOrNull { host.getOrNull(it)?.isLetter() == true } ?: return null
+        // Первый ярлык, а не домен второго уровня — см. Tls.mixFirstLabel.
+        val dot = host.indexOf('.')
+        val to = if (dot > 0) dot else host.length
+        if (to < 1) return null
+        val idx = (0 until to).firstOrNull { host[it].isLetter() } ?: return null
         val out = b.copyOf()
         val off = hostStart + idx
         val c: Int = out[off].toInt()

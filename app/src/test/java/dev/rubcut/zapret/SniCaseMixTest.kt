@@ -40,7 +40,7 @@ class SniCaseMixTest {
         val host = "www.youtube.com"
         val hello = StrategyAutopilotHelloFactory.build(host)
         val info = Tls.parseClientHello(hello, 0, hello.size)!!
-        val mixed = Tls.mixCaseInSld(hello, info.sniStart, info.sniEnd, info.sni)
+        val mixed = Tls.mixFirstLabel(hello, info.sniStart, info.sniEnd, info.sni)
 
         assertNotNull("смена регистра обязана применяться к youtube", mixed)
         assertEquals("длина обязана сохраниться — иначе поплывут все длины в TLS", hello.size, mixed!!.size)
@@ -61,7 +61,7 @@ class SniCaseMixTest {
         )) {
             val hello = StrategyAutopilotHelloFactory.build(host)
             val info = Tls.parseClientHello(hello, 0, hello.size)!!
-            val mixed = Tls.mixCaseInSld(hello, info.sniStart, info.sniEnd, info.sni)!!
+            val mixed = Tls.mixFirstLabel(hello, info.sniStart, info.sniEnd, info.sni)!!
             val reparsed = Tls.parseClientHello(mixed, 0, mixed.size)
 
             assertNotNull("$host: изменённый ClientHello перестал разбираться", reparsed)
@@ -78,29 +78,49 @@ class SniCaseMixTest {
     }
 
     /**
-     * Меняться должна буква ВНУТРИ домена второго уровня.
+     * Меняться должна буква ПЕРВОГО ярлыка, а не домена второго уровня.
      *
-     * Проверено на реальном фильтре: правка в поддомене (`wWw.youtube.com`) или
-     * в TLD (`www.youtube.coM`) не помогает — домен внутри остаётся читаемым,
-     * и соединение по-прежнему блокируется.
+     * На устройстве с настоящим фильтром, по три попытки на хост:
+     *
+     *   youtubei.googleapis.com    строчными 0 из 3, первый ярлык 3 из 3
+     *   redirector.googlevideo.com строчными 3 из 3, первый ярлык 3 из 3
+     *   www.youtube.com             строчными 1 из 3, первый ярлык 3 из 3
+     *   i.ytimg.com                 строчными 3 из 3, первый ярлык 3 из 3
+     *
+     * Смена в домене второго уровня, наоборот, ломает работающие хосты: на
+     * i.ytimg.com и redirector.googlevideo.com с ней обрыв, хотя без неё
+     * они проходят. Из-за этого приложение YouTube не грузился: хосты, которые
+     * и так работают, рвались, а заблокированные оставались заблокированными.
      */
     @Test
-    fun onlyChangeInsideSecondLevelDomainIsUseful() {
-        val host = "www.youtube.com"
-        val hello = StrategyAutopilotHelloFactory.build(host)
-        val info = Tls.parseClientHello(hello, 0, hello.size)!!
+    fun onlyFirstLabelIsChanged() {
+        for (host in listOf(
+            "www.youtube.com", "youtubei.googleapis.com", "i.ytimg.com",
+            "redirector.googlevideo.com", "rr12---sn-4g5ednse.googlevideo.com"
+        )) {
+            val hello = StrategyAutopilotHelloFactory.build(host)
+            val info = Tls.parseClientHello(hello, 0, hello.size)!!
+            val mixed = Tls.mixFirstLabel(hello, info.sniStart, info.sniEnd, info.sni)!!
+            val newInfo = Tls.parseClientHello(mixed, 0, mixed.size)!!
 
-        val mixed = Tls.mixCaseInSld(hello, info.sniStart, info.sniEnd, info.sni)!!
-        val newInfo = Tls.parseClientHello(mixed, 0, mixed.size)!!
+            val changed = (info.sni.indices).first { info.sni[it] != newInfo.sni[it] }
+            val firstDot = info.sni.indexOf('.')
+            val limit = if (firstDot > 0) firstDot else info.sni.length
+            val firstAlpha = (0 until info.sni.length).firstOrNull { info.sni[it].isLetter() } ?: -1
 
-        val changedIdx = (info.sni.indices).first { info.sni[it] != newInfo.sni[it] }
-        val sldStart = info.sni.lastIndexOf('.', info.sni.lastIndexOf('.') - 1) + 1
-        val sldEnd = info.sni.lastIndexOf('.')
-        assertTrue(
-            "изменён символ «${info.sni[changedIdx]}» на позиции $changedIdx, " +
-                "а нужно внутри домена второго уровня [$sldStart, $sldEnd) — иначе фильтр не обманут",
-            changedIdx in sldStart until sldEnd
-        )
+            assertTrue(
+                "$host: смена обязана быть в первом ярлыке, позиция $changed, граница $limit",
+                changed in 0 until limit
+            )
+            assertTrue(
+                "$host: изменена должна быть первая буква, позиция $firstAlpha",
+                changed == firstAlpha
+            )
+            assertEquals(
+                "$host: имя обязано читаться так же без учёта регистра",
+                host.lowercase(), newInfo.sni.lowercase()
+            )
+        }
     }
 
     /* ================================================================== */
@@ -184,17 +204,17 @@ class SniCaseMixTest {
         val req = "GET / HTTP/1.1\r\nHost: www.youtube.com\r\nAccept: */*\r\n\r\n".toByteArray()
         val range = Http.hostValueRange(req, 0, req.size)
         assertNotNull("значение Host должно находиться", range)
-        val mixed = Http.mixCaseInHost(req, range!!.first, range.second)
+        val mixed = Http.mixFirstHostLabel(req, range!!.first, range.second)
 
         assertNotNull(mixed)
         assertEquals("длина заголовков меняться не должна", req.size, mixed!!.size)
         val text = String(mixed, Charsets.ISO_8859_1)
-        // Меняется первая буква домена второго уровня, то есть `youtube` → `Youtube`.
+        // Меняется первая буква первого ярлыка: `www` → `Www`.
         assertTrue(
             "в значении Host должно быть имя с изменённой буквой внутри домена, а $text — нет",
-            text.contains("Host: www.Youtube.com")
+            text.contains("Host: Www.youtube.com")
         )
-        assertFalse("исходное написание должно исчезнуть", text.contains("www.youtube.com"))
+        assertFalse("исходное написание должно исчезнуть", text.contains("Host: www.youtube.com"))
         assertTrue("длина блока заголовков обязана сохраниться", Http.headerBlockLength(mixed, 0, mixed.size) > 0)
     }
 
@@ -202,19 +222,27 @@ class SniCaseMixTest {
     /*  Границы применимости                                               */
     /* ================================================================== */
 
+    /**
+     * Меняется первый ярлык, поэтому имя без точки тоже обрабатывается.
+     *
+     * Раньше приём требовал домен второго уровня и на `localhost` ничего не
+     * делал. Теперь достаточно одного ярлыка — так он работает и на именах
+     * без точки.
+     */
     @Test
-    fun namesWithoutSecondLevelDomainAreLeftAlone() {
+    fun singleLabelNamesAreHandled() {
         val hello = StrategyAutopilotHelloFactory.build("localhost")
         val info = Tls.parseClientHello(hello, 0, hello.size)!!
-        assertNull("у имени без домена второго уровня менять нечего",
-            Tls.mixCaseInSld(hello, info.sniStart, info.sniEnd, info.sni))
+        val mixed = Tls.mixFirstLabel(hello, info.sniStart, info.sniEnd, info.sni)
+        assertNotNull("имя без точки тоже должно обрабатываться", mixed)
+        assertEquals("Localhost", Tls.parseClientHello(mixed!!, 0, mixed.size)!!.sni)
     }
 
     @Test
     fun emptyAndOutOfBoundsInputsAreHandled() {
-        assertNull(Tls.mixCaseInSld(ByteArray(0), 0, 0, ""))
-        assertNull(Tls.mixCaseInSld(ByteArray(10), 5, 5, "a.b.c"))
-        assertNull(Http.mixCaseInHost(ByteArray(10), 3, 3))
+        assertNull(Tls.mixFirstLabel(ByteArray(0), 0, 0, ""))
+        assertNull(Tls.mixFirstLabel(ByteArray(10), 5, 5, "a.b.c"))
+        assertNull(Http.mixFirstHostLabel(ByteArray(10), 3, 3))
     }
 
     /** Приём обязан быть среди кандидатов автоподбора, иначе он не будет найден. */

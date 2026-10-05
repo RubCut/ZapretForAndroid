@@ -76,8 +76,8 @@ class DesyncEngine {
         var mixed = false
         if (s.sniCaseMix) {
             val rewritten = when {
-                hello != null -> Tls.mixCaseInSld(data, hello.sniStart, hello.sniEnd, hello.sni)
-                httpHostRange != null -> Http.mixCaseInHost(
+                hello != null -> Tls.mixFirstLabel(data, hello.sniStart, hello.sniEnd, hello.sni)
+                httpHostRange != null -> Http.mixFirstHostLabel(
                     data, httpHostRange.first, httpHostRange.second
                 )
                 else -> null

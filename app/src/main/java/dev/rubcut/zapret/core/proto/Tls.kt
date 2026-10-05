@@ -171,20 +171,30 @@ object Tls {
     private fun u16(v: Int): ByteArray =
         byteArrayOf((v shr 8 and 0xFF).toByte(), (v and 0xFF).toByte())
 
-    fun mixCaseInSld(b: ByteArray, hostStart: Int, hostEnd: Int, host: String): ByteArray? {
+    fun mixFirstLabel(b: ByteArray, hostStart: Int, hostEnd: Int, host: String): ByteArray? {
         val span = hostEnd - hostStart
         if (span <= 0 || host.isEmpty()) return null
-        val tldStart = host.lastIndexOf('.')
-        if (tldStart <= 0) return null                    // нет домена второго уровня
-        val sldStart = host.lastIndexOf('.', tldStart - 1)
-        val from = if (sldStart < 0) 0 else sldStart + 1
-        val to = tldStart
-        if (to - from < 2) return null                    // ярлык из одной буквы
-
-        // Первая буква домена второго уровня: её смена ломает подстрочное
-        // совпадение и при этом минимально отличается от имени, которое прислал
-        // клиент, — меньше шанс нарваться на строгий сервер.
-        val idx = (from until to).firstOrNull { host.getOrNull(it)?.isLetter() == true } ?: return null
+        // Меняется ПЕРВЫЙ ярлык, то есть самая левая часть имени.
+        //
+        // Проверено на устройстве с настоящим фильтром, по три попытки:
+        //
+        //   youtubei.googleapis.com    строчными 0 из 3, первый ярлык 3 из 3
+        //   redirector.googlevideo.com строчными 3 из 3, первый ярлык 3 из 3
+        //   www.youtube.com             строчными 1 из 3, первый ярлык 3 из 3
+        //   i.ytimg.com                 строчными 3 из 3, первый ярлык 3 из 3
+        //
+        // Смена в домене второго уровня, наоборот, ломает то, что работает: на
+        // i.ytimg.com и redirector.googlevideo.com она даёт обрыв, хотя без
+        // неё эти хосты проходят. Поэтому берётся именно первый ярлык — он
+        // ломает совпадение целиком, не задевая домен, который сервер проверяет
+        // отдельно.
+        // Ярлык из одной буквы тоже смешивается: у i.ytimg.com это `i` → `I`,
+        // и на устройстве такой вариант проходит 3 из 3. Раньше такое имя
+        // отбрасывалось, и хост оставался без приёма.
+        val dot = host.indexOf('.')
+        val to = if (dot > 0) dot else host.length
+        if (to < 1) return null
+        val idx = (0 until to).firstOrNull { host[it].isLetter() } ?: return null
         val out = b.copyOf()
         val off = hostStart + idx
         if (off < 0 || off >= out.size) return null

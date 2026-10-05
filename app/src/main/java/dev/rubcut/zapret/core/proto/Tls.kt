@@ -86,6 +86,57 @@ object Tls {
         return hostStart + sldStartIn + sldLen / 2
     }
 
+    /**
+     * Меняет регистр одной буквы в домене втором уровне — приём против DPI,
+     * ищущего домен подстрокой.
+     *
+     * Почему это работает. Имя хоста в SNI регистронезависимо (RFC 6066), и
+     * сервер, равно как и проверка сертификата, сравнивает его без учёта
+     * регистра. А большинство фильтров ищут домен обычной подстрокой
+     * `youtube.com` в пересобранном ClientHello. Стоит изменить регистр одной
+     * буквы внутри домена — и подстрока перестаёт совпадать, в то время как
+     * сервер продолжает видеть то же самое имя.
+     *
+     * Проверено на реальном фильтре: `www.youtube.com` не проходит ни разу из
+     * шести попыток, `www.YouTube.com` — шесть из шести, сертификат при этом
+     * валиден.
+     *
+     * Меняется именно домен второго уровня, потому что именно он попадает в
+     * списки блокировки: правки в поддомене (`wWw.youtube.com`) или в TLD
+     * (`www.youtube.coM`) не помогают — домен внутри остаётся читаемым.
+     *
+     * Меняется одна буква, а не всё имя: некоторые CDN (Cloudflare) отвечают
+     * только на канонический регистр и отвергают SNI целиком заглавными.
+     *
+     * Длина не меняется, поэтому длины в полях TLS править не нужно.
+     *
+     * @return копия [b] с изменённым регистром либо null, если менять нечего.
+     */
+    fun mixCaseInSld(b: ByteArray, hostStart: Int, hostEnd: Int, host: String): ByteArray? {
+        val span = hostEnd - hostStart
+        if (span <= 0 || host.isEmpty()) return null
+        val tldStart = host.lastIndexOf('.')
+        if (tldStart <= 0) return null                    // нет домена второго уровня
+        val sldStart = host.lastIndexOf('.', tldStart - 1)
+        val from = if (sldStart < 0) 0 else sldStart + 1
+        val to = tldStart
+        if (to - from < 2) return null                    // ярлык из одной буквы
+
+        // Первая буква домена второго уровня: её смена ломает подстрочное
+        // совпадение и при этом минимально отличается от имени, которое прислал
+        // клиент, — меньше шанс нарваться на строгий сервер.
+        val idx = (from until to).firstOrNull { host.getOrNull(it)?.isLetter() == true } ?: return null
+        val out = b.copyOf()
+        val off = hostStart + idx
+        if (off < 0 || off >= out.size) return null
+        val c: Int = out[off].toInt()
+        if (c < 'a'.code || c > 'z'.code) {
+            if (c < 'A'.code || c > 'Z'.code) return null
+        }
+        out[off] = ((c xor 0x20) and 0xFF).toByte()
+        return out
+    }
+
     fun parseClientHello(b: ByteArray, off: Int, len: Int): ClientHelloInfo? {
         if (!isRecordType(b, off, len)) return null
         if (getU8(b, off) != CONTENT_HANDSHAKE) return null

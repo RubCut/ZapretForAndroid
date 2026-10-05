@@ -115,6 +115,8 @@
     <string name="strategy_wssize">Медленный старт окна (--wssize)</string>
     <string name="strategy_wssize_hint">Уменьшает advertised window на первых байтах, заставляя сервер дробить ServerHello. 0 — отключено.</string>
     <string name="strategy_wssize_bytes">Пакетов с урезанным окном</string>
+    <string name="strategy_case_mix">Смешивать регистр в имени хоста</string>
+    <string name="strategy_case_mix_hint">Меняет одну букву в домене второго уровня. Имя хоста регистронезависимо, поэтому сервер разницы не видит, а фильтры, ищущие домон вроде youtube.com подстрокой, перестают его находить. Обходит фильтры, которые пересобирают сегменты целиком. Выключайте, если сайт перестал открываться: часть CDN отвечает только на канонический регистр.</string>
     <string name="strategy_wssize_window">Размер окна, байт</string>
 
     <string name="strategy_group_filter">Фильтры потока</string>

@@ -97,7 +97,11 @@ object Presets {
                 name = "Остальные хосты из списка",
                 tcpPorts = "$TLS_PORTS,$HTTP_PORTS",
                 hostSource = HOSTLIST,
-                strategy = Strategy(desync = MULTISPLIT, splitPositions = listOf(MIDSNI), splitDelayMs = 2)
+                strategy = Strategy(
+                    desync = MULTISPLIT,
+                    splitPositions = listOf(MIDSNI),
+                    splitDelayMs = 2
+                )
             )
         )
     )

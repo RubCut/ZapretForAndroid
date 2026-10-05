@@ -23,17 +23,26 @@ private val Context.zapretDataStore by preferencesDataStore(name = "zapret-confi
  */
 class ConfigRepository(private val context: Context, scope: CoroutineScope) {
 
+    /**
+     * Заводская конфигурация — это профиль по умолчанию, а не пустой [AppConfig].
+     *
+     * Без этого первая установка показывала «профиль YouTube + Discord», но
+     * работала на сырых значениях полей: без правил, без блокировки QUIC и без
+     * разбиения по первому байту. Пользователь видел одно, а обход был другой.
+     */
+    private fun factory(): AppConfig = Presets.apply(ProfileId.COMBINED, AppConfig())
+
     @Volatile
-    private var cached: AppConfig = AppConfig()
+    private var cached: AppConfig = factory()
 
     /** Синхронный снимок — его читают потоки туннеля. */
     val current: AppConfig get() = cached
 
     val config: StateFlow<AppConfig> = context.zapretDataStore.data
         .map { prefs: Preferences -> decode(prefs[CONFIG_KEY]) }
-        .catch { emit(AppConfig()) }
+        .catch { emit(factory()) }
         .onEach { cached = it }
-        .stateIn(scope, SharingStarted.Eagerly, AppConfig())
+        .stateIn(scope, SharingStarted.Eagerly, factory())
 
     suspend fun ensureLoaded() {
         val prefs = context.zapretDataStore.data.first()
@@ -47,7 +56,8 @@ class ConfigRepository(private val context: Context, scope: CoroutineScope) {
 
     suspend fun set(value: AppConfig) = write(value)
 
-    suspend fun reset() = write(AppConfig())
+    /** Сброс к заводским значениям — это тоже профиль по умолчанию. */
+    suspend fun reset() = write(factory())
 
     fun exportJson(): String = cached.toJson().toString(2)
 
@@ -63,8 +73,8 @@ class ConfigRepository(private val context: Context, scope: CoroutineScope) {
     }
 
     private fun decode(raw: String?): AppConfig =
-        if (raw.isNullOrBlank()) AppConfig()
-        else runCatching { AppConfig.fromJson(JSONObject(raw)) }.getOrElse { AppConfig() }
+        if (raw.isNullOrBlank()) factory()
+        else runCatching { AppConfig.fromJson(JSONObject(raw)) }.getOrElse { factory() }
 
     private companion object {
         val CONFIG_KEY: Preferences.Key<String> = stringPreferencesKey("config_json")

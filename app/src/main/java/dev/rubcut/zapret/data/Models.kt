@@ -190,6 +190,12 @@ data class AppConfig(
     val wssizePackets: Int = 6,
     val wssizeWindow: Int = 8192,
     val anyProtocol: Boolean = false,
+    /**
+     * Общая настройка: смешивать регистр в имени хоста для потоков, которые не
+     * попали ни под одно правило. Сами правила переопределяют её полем
+     * [Strategy.sniCaseMix].
+     */
+    val sniCaseMix: Boolean = false,
 
     // Фильтры
     val tcpPorts: String = "80,443,2053,2082,2083,2086,2087,2095,2096,8443",
@@ -242,7 +248,8 @@ data class AppConfig(
         wssizeEnabled = wssizeEnabled,
         wssizePackets = wssizePackets,
         wssizeWindow = wssizeWindow,
-        anyProtocol = anyProtocol
+        anyProtocol = anyProtocol,
+        sniCaseMix = sniCaseMix
     )
 
     fun toJson(): JSONObject {
@@ -265,6 +272,7 @@ data class AppConfig(
         o.put("wssizePackets", wssizePackets)
         o.put("wssizeWindow", wssizeWindow)
         o.put("anyProtocol", anyProtocol)
+        o.put("sniCaseMix", sniCaseMix)
 
         o.put("tcpPorts", tcpPorts)
         o.put("udpPorts", udpPorts)
@@ -328,6 +336,7 @@ data class AppConfig(
                 wssizePackets = o.optInt("wssizePackets", d.wssizePackets),
                 wssizeWindow = o.optInt("wssizeWindow", d.wssizeWindow),
                 anyProtocol = o.optBoolean("anyProtocol", d.anyProtocol),
+                sniCaseMix = o.optBoolean("sniCaseMix", d.sniCaseMix),
 
                 tcpPorts = o.optString("tcpPorts", d.tcpPorts),
                 udpPorts = o.optString("udpPorts", d.udpPorts),

@@ -189,7 +189,8 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                                     wssizeEnabled = s.wssizeEnabled,
                                     wssizePackets = s.wssizePackets,
                                     wssizeWindow = s.wssizeWindow,
-                                    anyProtocol = s.anyProtocol
+                                    anyProtocol = s.anyProtocol,
+                                    sniCaseMix = s.sniCaseMix
                                 )
                             }
                         }
@@ -418,6 +419,12 @@ fun StrategyControls(strategy: Strategy, onChange: (Strategy) -> Unit) {
         title = stringResource(R.string.strategy_any_protocol),
         checked = strategy.anyProtocol,
         onCheckedChange = { v -> onChange(strategy.copy(anyProtocol = v)) }
+    )
+    SwitchRow(
+        title = stringResource(R.string.strategy_case_mix),
+        checked = strategy.sniCaseMix,
+        onCheckedChange = { v -> onChange(strategy.copy(sniCaseMix = v)) },
+        subtitle = stringResource(R.string.strategy_case_mix_hint)
     )
 }
 

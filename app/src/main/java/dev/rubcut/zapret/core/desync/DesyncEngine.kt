@@ -55,13 +55,40 @@ class DesyncEngine {
             ?: ctx.knownHost
             ?: httpHostRange?.let { String(payload, it.first, it.second - it.first, Charsets.ISO_8859_1) }
 
-        if (s.desync == DesyncMode.NONE) return DesyncPlan.passthrough(payload, "off", host)
+        // Смена регистра в имени хоста. Делается ДО разбиения: фильтр должен
+        // не найти домен в том потоке, который до него дойдёт, а не в том,
+        // который мы разрежем уже после.
+        var data = payload
+        var mixed = false
+        if (s.sniCaseMix) {
+            val rewritten = when {
+                hello != null -> Tls.mixCaseInSld(data, hello.sniStart, hello.sniEnd, hello.sni)
+                httpHostRange != null -> Http.mixCaseInHost(
+                    data, httpHostRange.first, httpHostRange.second
+                )
+                else -> null
+            }
+            if (rewritten != null) {
+                data = rewritten
+                mixed = true
+            }
+        }
+
+        // Смена регистра — самостоятельный приём, а не часть разбиения, поэтому
+        // работает и при выключенном десинхронизме. Дальше любая ветка, где
+        // разбить нечего, обязана отдать изменённые байты целиком, иначе приём
+        // молча потеряется.
+        fun giveUp(reason: String) =
+            if (mixed) DesyncPlan(listOf(data), true, "смена регистра в имени хоста", host)
+            else DesyncPlan.passthrough(payload, reason, host)
+
+        if (s.desync == DesyncMode.NONE) return giveUp("off")
 
         // 1) Переупаковка TLS-записей — аналог --dpi-desync-tlsrec=N
         val wantsTlsRec = s.desync == DesyncMode.TLSREC || s.desync == DesyncMode.MULTISPLIT_TLSREC
         val parts = if (s.tlsrecParts >= 2) s.tlsrecParts else 2
         if (isTls && wantsTlsRec) {
-            val repacked = Tls.repackRecords(payload, 0, payload.size, parts)
+            val repacked = Tls.repackRecords(data, 0, data.size, parts)
             if (repacked != null) {
                 val bounds = Tls.recordBoundaries(repacked, 0, repacked.size)
                 val writes = splitAt(repacked, bounds.filter { it in 1 until repacked.size })
@@ -83,13 +110,11 @@ class DesyncEngine {
         }
 
         // 3) split / multisplit
-        if (!isTls && !isHttp && !s.anyProtocol) {
-            return DesyncPlan.passthrough(payload, "не TLS/HTTP, пропуск", host)
-        }
+        if (!isTls && !isHttp && !s.anyProtocol) return giveUp("не TLS/HTTP, пропуск")
 
-        val raw = collectPositions(s, payload, hello, httpHostRange)
-        val positions = raw.filter { it in 1 until payload.size }.distinct().sorted()
-        if (positions.isEmpty()) return DesyncPlan.passthrough(payload, "нет точки разбиения", host)
+        val raw = collectPositions(s, data, hello, httpHostRange)
+        val positions = raw.filter { it in 1 until data.size }.distinct().sorted()
+        if (positions.isEmpty()) return giveUp("нет точки разбиения")
 
         // Ключевой момент: разбиение должно идти ПОДРЯД с точками, а не только
         // в середину. Иначе первая точка (FIRST = 1) отсекает один байт и весь
@@ -99,10 +124,11 @@ class DesyncEngine {
 
         val single = s.desync == DesyncMode.SPLIT || s.desync == DesyncMode.TLSREC
         val chosen = if (single) listOf(ordered.last()) else ordered
-        val writes = splitAt(payload, chosen)
-        if (writes.size < 2) return DesyncPlan.passthrough(payload, "разбиение не удалось", host)
+        val writes = splitAt(data, chosen)
+        if (writes.size < 2) return giveUp("разбиение не удалось")
 
         val label = buildString {
+            if (mixed) append("смена регистра + ")
             append(if (single) "split" else "multisplit")
             append(" [").append(chosen.joinToString(",")).append("] → ")
             append(writes.size).append(" сегм.")

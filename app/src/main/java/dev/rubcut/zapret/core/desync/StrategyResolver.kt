@@ -76,7 +76,7 @@ class StrategyResolver(
             }
         }
 
-        return Decision(cfg.toStrategy(), null, "общая стратегия профиля")
+        return Decision(cfg.toStrategy().copy(sniCaseMix = cfg.sniCaseMix), null, "общая стратегия профиля")
     }
 
     /**

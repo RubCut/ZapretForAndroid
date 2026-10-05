@@ -39,10 +39,29 @@ class StrategyAutopilot(private val stack: TcpStack) {
     companion object {
         val CANDIDATES: List<Pair<String, Strategy>> = listOf(
             "без обработки (прозрачно)" to Strategy(desync = DesyncMode.NONE),
-            // Комбинация FIRST + MIDSNI стоит первой среди разбиений: по опыту
-            // именно она работает на большинстве DPI. Отдельные точки по
-            // одной слабее — FIRST отрезает пустой префикс, а MIDSNI без
-            // FIRST оставляет начало записи целым.
+            // Смена регистра в имени хоста стоит ПЕРВОЙ среди активных вариантов.
+            // Она обходит фильтры, которые полностью пересобирают сегменты: там
+            // разбиение не помогает вовсе, а смена одной буквы в домене ломает
+            // подстрочный поиск. Проверено на реальном фильтре.
+            "смена регистра в имени хоста" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                sniCaseMix = true
+            ),
+            "смена регистра + без разбиения" to Strategy(
+                desync = DesyncMode.NONE,
+                sniCaseMix = true
+            ),
+            "смена регистра + середина домена + задержка 40 мс" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 40,
+                sniCaseMix = true
+            ),
+            // Комбинация FIRST + MIDSNI идёт следом: на фильтрах, которые
+            // смотрят только на первые сегменты, разбиение достаточно, а смена
+            // регистра там не нужна и может навредить строгим CDN.
             "multisplit · первый байт + середина домена" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
                 splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),

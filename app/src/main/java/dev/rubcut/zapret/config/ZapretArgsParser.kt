@@ -19,6 +19,7 @@ class ParseResult(
     val defaultStrategy: Strategy?,
     val cutoffChunks: Int?,
     val anyProtocol: Boolean?,
+    val sniCaseMix: Boolean? = null,
     val supported: List<String>,
     val ignored: List<String>,
     val unknown: List<String>,
@@ -42,6 +43,7 @@ class ParseResult(
         wssizePackets = defaultStrategy?.wssizePackets ?: base.wssizePackets,
         wssizeWindow = defaultStrategy?.wssizeWindow ?: base.wssizeWindow,
         anyProtocol = anyProtocol ?: defaultStrategy?.anyProtocol ?: base.anyProtocol,
+        sniCaseMix = sniCaseMix ?: defaultStrategy?.sniCaseMix ?: base.sniCaseMix,
         cutoffChunks = cutoffChunks ?: base.cutoffChunks
     )
 }
@@ -91,7 +93,12 @@ object ZapretArgsParser {
             .replace(Regex("(?im)^\\s*(start|@echo|chcp|cd|call|set|echo)\\b.*$"), " ")
 
         val tokens = tokenize(normalized)
-        if (tokens.isEmpty()) return ParseResult(emptyList(), null, null, null, null, null, null, null, supported, ignored, unknown, errors)
+        if (tokens.isEmpty()) return ParseResult(
+            rules = emptyList(), globalTcpPorts = null, globalUdpPorts = null,
+            hostlistMode = null, ipsetMode = null, defaultStrategy = null,
+            cutoffChunks = null, anyProtocol = null, sniCaseMix = null,
+            supported = supported, ignored = ignored, unknown = unknown, errors = errors
+        )
 
         val rules = ArrayList<StrategyRule>()
         var globalTcp: String? = null
@@ -100,6 +107,7 @@ object ZapretArgsParser {
         var ipsetMode: IpsetMode? = null
         var cutoff: Int? = null
         var anyProtocol: Boolean? = null
+        var sniCaseMix: Boolean? = null
 
         var curTcp = ""
         var curUdp = ""
@@ -115,6 +123,7 @@ object ZapretArgsParser {
         var curWssizePackets = base.wssizePackets
         var curWssizeWindow = base.wssizeWindow
         var curAnyProto = base.anyProtocol
+        var curCaseMix = base.sniCaseMix
         var ruleName = ""
 
         fun flush() {
@@ -128,7 +137,8 @@ object ZapretArgsParser {
                 wssizeEnabled = curWssizeOn,
                 wssizePackets = curWssizePackets,
                 wssizeWindow = curWssizeWindow,
-                anyProtocol = curAnyProto
+                anyProtocol = curAnyProto,
+                sniCaseMix = curCaseMix
             )
             rules += StrategyRule(
                 name = ruleName.ifBlank { defaultRuleName(curTcp, curUdp, curDesync) },
@@ -144,6 +154,7 @@ object ZapretArgsParser {
             curDesync = DesyncMode.NONE
             curPositions = ArrayList()
             curAnyProto = base.anyProtocol
+            curCaseMix = base.sniCaseMix
             ruleName = ""
         }
 
@@ -200,6 +211,11 @@ object ZapretArgsParser {
                     curAnyProto = value == null || value == "1" || value.equals("true", true)
                     anyProtocol = curAnyProto
                     supported += "--dpi-desync-any-protocol"
+                }
+                k == "--hostcase" -> {
+                    curCaseMix = true
+                    sniCaseMix = true
+                    supported += "--hostcase (смена регистра в имени хоста)"
                 }
                 k == "--dpi-desync-cutoff" -> {
                     val n = value?.trim()?.trimStart('n', 'd')?.toIntOrNull()
@@ -265,6 +281,7 @@ object ZapretArgsParser {
             defaultStrategy = if (rules.isEmpty()) null else rules.last().strategy,
             cutoffChunks = cutoff,
             anyProtocol = anyProtocol,
+            sniCaseMix = sniCaseMix,
             supported = supported.distinct(),
             ignored = ignored.distinct(),
             unknown = unknown.distinct(),

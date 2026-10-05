@@ -110,6 +110,8 @@
     <string name="strategy_wssize">Slow window start (--wssize)</string>
     <string name="strategy_wssize_hint">Shrinks the advertised window for the first bytes, forcing the server to fragment ServerHello. 0 disables it.</string>
     <string name="strategy_wssize_bytes">Packets with the reduced window</string>
+    <string name="strategy_case_mix">Mix letter case in the hostname</string>
+    <string name="strategy_case_mix_hint">Changes one letter in the second-level domain. Hostnames are case-insensitive, so the server sees no difference, while filters that look for a substring like youtube.com stop matching. It defeats filters that fully reassemble segments. Turn it off if a site stops loading: some CDNs only answer the canonical case.</string>
     <string name="strategy_wssize_window">Window size, bytes</string>
 
     <string name="strategy_group_filter">Flow filters</string>

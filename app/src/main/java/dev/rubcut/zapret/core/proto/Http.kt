@@ -52,6 +52,35 @@ object Http {
         return (off + i) to (off + j)
     }
 
+    /**
+     * Меняет регистр одной буквы в домене втором уровне значения `Host`.
+     *
+     * Приём тот же, что и для TLS SNI (см. [Tls.mixCaseInSld]): имя хоста в
+     * HTTP регистронезависимо по RFC 7230, а фильтры ищут его подстрокой.
+     * Длина не меняется, поэтому разбирать запрос заново не нужно.
+     *
+     * @return копия [b] либо null, если менять нечего.
+     */
+    fun mixCaseInHost(b: ByteArray, hostStart: Int, hostEnd: Int): ByteArray? {
+        val span = hostEnd - hostStart
+        if (span <= 0) return null
+        val host = String(b, hostStart, span, Charsets.ISO_8859_1)
+        val tldStart = host.lastIndexOf('.')
+        if (tldStart <= 0) return null
+        val sldStart = host.lastIndexOf('.', tldStart - 1)
+        val from = if (sldStart < 0) 0 else sldStart + 1
+        if (tldStart - from < 2) return null
+        val idx = (from until tldStart).firstOrNull { host.getOrNull(it)?.isLetter() == true } ?: return null
+        val out = b.copyOf()
+        val off = hostStart + idx
+        val c: Int = out[off].toInt()
+        if (c < 'a'.code || c > 'z'.code) {
+            if (c < 'A'.code || c > 'Z'.code) return null
+        }
+        out[off] = ((c xor 0x20) and 0xFF).toByte()
+        return out
+    }
+
     /** Заголовки HTTP-запроса целиком (для логов). */
     fun firstLine(b: ByteArray, off: Int, len: Int): String {
         val end = minOf(off + len, b.size)

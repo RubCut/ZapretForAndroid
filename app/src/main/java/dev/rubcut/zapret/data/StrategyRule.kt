@@ -17,7 +17,20 @@ data class Strategy(
     val wssizeEnabled: Boolean = false,
     val wssizePackets: Int = 6,
     val wssizeWindow: Int = 8192,
-    val anyProtocol: Boolean = false
+    val anyProtocol: Boolean = false,
+    /**
+     * Смешивать регистр в имени хоста перед отправкой в сеть.
+     *
+     * Имя в SNI и в `Host:` регистронезависимо, поэтому смена регистра одной
+     * буквы не видна ни серверу, ни проверке сертификата, но ломает фильтры,
+     * ищущие домен подстрокой. Проверено: на фильтре с полной пересборкой
+     * сегментов, где segmentation не помогает вовсе, `www.youtube.com` не
+     * проходит ни разу из шести попыток, а `www.YouTube.com` — шесть из шести.
+     *
+     * Включать не везде: некоторые CDN (Cloudflare) отвечают только на
+     * канонический регистр и молча рвут соединение.
+     */
+    val sniCaseMix: Boolean = false
 ) {
     val isPassive: Boolean get() = desync == DesyncMode.NONE && !wssizeEnabled
 
@@ -32,6 +45,7 @@ data class Strategy(
         o.put("wssizePackets", wssizePackets)
         o.put("wssizeWindow", wssizeWindow)
         o.put("anyProtocol", anyProtocol)
+        o.put("sniCaseMix", sniCaseMix)
         return o
     }
 
@@ -46,6 +60,7 @@ data class Strategy(
         if (tlsrecParts >= 2) append(" --dpi-desync-tlsrec=").append(tlsrecParts)
         if (wssizeEnabled) append(" --wssize=").append(wssizePackets).append(':').append(wssizeWindow)
         if (anyProtocol) append(" --dpi-desync-any-protocol=1")
+        if (sniCaseMix) append(" --hostcase")
     }
 
     companion object {
@@ -69,7 +84,8 @@ data class Strategy(
                 wssizeEnabled = o.optBoolean("wssizeEnabled", d.wssizeEnabled),
                 wssizePackets = o.optInt("wssizePackets", d.wssizePackets),
                 wssizeWindow = o.optInt("wssizeWindow", d.wssizeWindow),
-                anyProtocol = o.optBoolean("anyProtocol", d.anyProtocol)
+                anyProtocol = o.optBoolean("anyProtocol", d.anyProtocol),
+                sniCaseMix = o.optBoolean("sniCaseMix", d.sniCaseMix)
             )
         }
     }

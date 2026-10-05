@@ -39,24 +39,36 @@ class StrategyAutopilot(private val stack: TcpStack) {
     companion object {
         val CANDIDATES: List<Pair<String, Strategy>> = listOf(
             "без обработки (прозрачно)" to Strategy(desync = DesyncMode.NONE),
-            // Смена регистра в имени хоста стоит ПЕРВОЙ среди активных вариантов.
-            // Она обходит фильтры, которые полностью пересобирают сегменты: там
-            // разбиение не помогает вовсе, а смена одной буквы в домене ломает
-            // подстрочный поиск. Проверено на реальном фильтре.
-            "смена регистра в имени хоста" to Strategy(
-                desync = DesyncMode.MULTISPLIT,
-                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
-                splitDelayMs = 2,
-                sniCaseMix = true
-            ),
-            "смена регистра + без разбиения" to Strategy(
+            // Смена регистра в имени хоста стоит первой среди активных вариантов: она
+            // обходит фильтры, которые полностью пересобирают сегменты, где
+            // разбиение не помогает вовсе.
+            //
+            // Порядок вариантов внутри — по замерам на реальном фильтре,
+            // 6 кругов по кругу с байтами самого приложения:
+            //
+            //   смена регистра, одним куском            6 из 6
+            //   смена регистра + разбиение по 1 байту   6 из 6
+            //   смена регистра + 1,midsld               5 из 6
+            //   смена регистра + разбиение по midsld     0 из 6
+            //
+            // То есть разбиение внутри самого домена приём портит: разрыв
+            // попадает ровно в ту строку, которую приём и ломает, и фильтр
+            // получает её обратно склеенной. Сплошной поток надёжнее, поэтому
+            // он и проверяется первым.
+            "смена регистра, без разбиения" to Strategy(
                 desync = DesyncMode.NONE,
                 sniCaseMix = true
             ),
-            "смена регистра + середина домена + задержка 40 мс" to Strategy(
+            "смена регистра + первый байт" to Strategy(
+                desync = DesyncMode.MULTISPLIT,
+                splitPositions = listOf(SplitPos.FIRST),
+                splitDelayMs = 2,
+                sniCaseMix = true
+            ),
+            "смена регистра + первый байт + середина домена" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
                 splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
-                splitDelayMs = 40,
+                splitDelayMs = 2,
                 sniCaseMix = true
             ),
             // Комбинация FIRST + MIDSNI идёт следом: на фильтрах, которые

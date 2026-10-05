@@ -61,8 +61,14 @@ class AutopilotCandidatesTest {
      */
     @Test
     fun strongestSplitCandidateComesFirst() {
+        // Варианты со сменой регистра проверяются отдельно: они описывают другой
+        // приём и обходятся собственным тестом, здесь важна только их роль
+        // разбивающих кандидатов без смены регистра.
         val firstSplit = StrategyAutopilot.CANDIDATES
-            .first { it.second.desync != dev.rubcut.zapret.data.DesyncMode.NONE }
+            .first {
+                it.second.desync != dev.rubcut.zapret.data.DesyncMode.NONE &&
+                    !it.second.sniCaseMix
+            }
         val positions = firstSplit.second.splitPositions
         assertTrue(
             "первый разбивающий кандидат должен содержать обе точки (FIRST и MIDSNI), а содержит $positions",

@@ -225,17 +225,15 @@ class SniCaseMixTest {
                 "ни одна сегментация не работает",
             StrategyAutopilot.CANDIDATES.any { it.second.sniCaseMix }
         )
-// Первым среди активных идёт отравление DPI: против фильтра с полной
-        // пересборкой сегментов не работает вообще ничего, кроме него. Поэтому
-        // проверяем, что смена регистра идёт следом, а не раньше.
+// Смена регистра — первый приём, который действительно даёт ServerHello на
+        // фильтре с полной пересборкой сегментов. Отравление DPI проверяется
+        // отдельно и в кандидатах не участвует: оно ломает рукопожатие.
         val idx = StrategyAutopilot.CANDIDATES.indexOfFirst { it.second.sniCaseMix }
         assertTrue("смена регистра обязана быть среди кандидатов", idx >= 0)
-        val before = StrategyAutopilot.CANDIDATES.take(idx)
-            .any { it.second.desync != DesyncMode.NONE || it.second.poisonEnabled }
         assertTrue(
-            "отравление DPI обязано проверяться раньше смены регистра: разбиение и смена " +
-                "регистра против фильтра с пересборкой сегментов бесполезны",
-            before
+            "отравление DPI не должно проверяться раньше смены регистра — " +
+                "оно ломает рукопожатие, см. PoisonRecordTest",
+            StrategyAutopilot.CANDIDATES.take(idx).none { it.second.poisonEnabled }
         )
     }
 

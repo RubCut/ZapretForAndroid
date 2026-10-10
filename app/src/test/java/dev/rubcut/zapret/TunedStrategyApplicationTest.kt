@@ -182,7 +182,10 @@ class TunedStrategyApplicationTest {
 
         // Явное отличие null от 0: 0x00 — законное значение байта.
         val withZero = Strategy(desync = DesyncMode.OOB, urgentByte = 0)
-        assertEquals(0, Strategy.fromJson(withZero.toJson()).urgentByte)
+        assertTrue(
+            "0 обязан пережить round-trip как 0",
+            Strategy.fromJson(withZero.toJson()).urgentByte == 0
+        )
         val without = Strategy(desync = DesyncMode.OOB, urgentByte = null)
         assertEquals(null, Strategy.fromJson(without.toJson()).urgentByte)
     }

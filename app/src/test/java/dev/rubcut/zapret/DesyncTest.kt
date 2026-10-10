@@ -214,7 +214,7 @@ class DesyncTest {
         )
         assertTrue("OOB обязан применяться", p.applied)
         assertTrue("OOB без разбиения бессмысленен: ${p.writes.size}", p.writes.size >= 2)
-        assertEquals("байт обязан дойти до сокета", 0, p.urgentByte)
+        assertTrue("байт обязан дойти до сокета, а там ${p.urgentByte}", p.urgentByte == 0)
     }
 
     /** OOB без заданного байта (null) — отказ, а не молчаливый разрез. */

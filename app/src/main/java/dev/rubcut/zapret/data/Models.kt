@@ -1,5 +1,8 @@
 package dev.rubcut.zapret.data
 
+import org.json.JSONArray
+import org.json.JSONObject
+
 /**
  * Текущая версия схемы [AppConfig].
  *
@@ -9,9 +12,6 @@ package dev.rubcut.zapret.data
  *     регистра), добавлены поля urgentByte/fakeTtl.
  */
 const val CURRENT_CONFIG_VERSION = 2
-
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * Режим десинхронизации DPI.

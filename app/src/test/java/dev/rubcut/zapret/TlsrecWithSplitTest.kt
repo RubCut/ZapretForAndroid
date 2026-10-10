@@ -177,7 +177,10 @@ class TlsrecWithSplitTest {
             bodies.write(rebuilt, prev + Tls.RECORD_HEADER, len)
             prev = e
         }
-        val defrag = bodies.toByteArray()
+        // Парсер ждёт целую TLS-запись, а не голые тела: собираем корректную
+        // одиночную запись (версия — из исходной, длина — по факту тел).
+        val raw = bodies.toByteArray()
+        val defrag = byteArrayOf(0x16, rebuilt[1], rebuilt[2], (raw.size ushr 8).toByte(), raw.size.toByte()) + raw
         assertEquals(
             "SNI обязан остаться читаемым после переупаковки",
             "rr1---sn-gxuo03g-ig3s.googlevideo.com",

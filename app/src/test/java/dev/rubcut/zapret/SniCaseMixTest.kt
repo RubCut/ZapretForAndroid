@@ -326,9 +326,14 @@ class SniCaseMixTest {
                 cfg.sniCaseMix
             )
             for (rule in cfg.rules) {
-                val wantsCase = rule.hostSource == dev.rubcut.zapret.data.HostSource.GOOGLE
+                // Смена регистра уцелела только в паре с hostfakesplit на
+                // открытом HTTP. На TLS её вариант проиграл замерам
+                // стороннего приложения («TLS-записи + разбиение по первому
+                // байту» проверку не прошло), а победитель `tlsrec=0+wm`
+                // регистра SNI не касается вообще.
+                val wantsCase = rule.strategy.desync == DesyncMode.HOSTFAKESPLIT
                 assertEquals(
-                    "правило «${rule.name}» профиля ${p.token}: источник ${rule.hostSource}, " +
+                    "правило «${rule.name}» профиля ${p.token}: приём ${rule.strategy.desync}, " +
                         "смена регистра должна быть ${if (wantsCase) "включена" else "выключена"}",
                     wantsCase, rule.strategy.sniCaseMix
                 )

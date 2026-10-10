@@ -128,25 +128,32 @@ class DesyncEngine {
             val repacked = cutAt?.let { Tls.repackRecordAt(data, 0, data.size, it) }
                 ?: Tls.repackRecords(data, 0, data.size, parts)
             if (repacked != null) {
+                // Позиции считаются на ИСХОДНЫХ данных и отображаются вперёд
+                // через известный рез.
+                //
+                // Переразбор SNI после переупаковки здесь не годится: имя после
+                // реза лежит на границе записей, а парсер несколько записей не
+                // склеивает — вернёт усечённое имя (на практике было «googl????»),
+                // из него вычислятся чужая точка и лишний сегмент.
+                //
+                // Один рез в точке cut вставляет ровно один заголовок: всё
+                // правее точки сдвинуто на RECORD_HEADER. Граница, созданная
+                // резом, уже рвёт поток в этом месте, поэтому точка, прилипшая
+                // к ней на длину заголовка, — артефакт сдвига, а не воля
+                // настроек, и вычитается: иначе вместо образа победителя
+                // (ровно 2 сегмента) получается 3 с одиноким заголовком.
+                val origSplit = collectPositions(s, data, hello, null)
+                val split = if (cutAt != null) {
+                    origSplit.map { p -> if (p >= cutAt) p + Tls.RECORD_HEADER else p }
+                        .filterNot { p -> p > cutAt && p - cutAt <= Tls.RECORD_HEADER }
+                } else {
+                    // Деление пополам: точек в теле не было, пересчёт идёт по
+                    // новым записям как раньше.
+                    val hello2 = Tls.parseClientHello(repacked, 0, repacked.size)
+                    collectPositions(s, repacked, hello2, null)
+                }
                 // Границы записей И точки разбиения из настроек — вместе.
-                //
-                // Раньше здесь брались только границы переупакованных записей, и
-                // ветка возвращалась раньше общего кода: половина названия
-                // MULTISPLIT_TLSREC не работала, точки из splitPositions
-                // игнорировались.
-                //
-                // SNI разбирается заново: после переупаковки он сдвинут на
-                // длину добавленной записи, старые смещения больше не годятся.
-                val hello2 = Tls.parseClientHello(repacked, 0, repacked.size)
                 val bounds = Tls.recordBoundaries(repacked, 0, repacked.size)
-                // Граница, созданная нашим резом, уже рвёт поток в этом месте.
-                // Пересчитанные после вставки заголовка точки лежат на длину
-                // заголовка дальше (M+5 вместо M) — это артефакт пересчёта, а не
-                // воля настроек. Без вычета получается лишний 5-байтовый сегмент
-                // из одного заголовка записи, которого у победившего варианта
-                // `--tlsrec=0+wm --split=0+wm` (ровно 2 сегмента) нет.
-                val split = collectPositions(s, repacked, hello2, null)
-                    .filterNot { p -> cutAt != null && p > cutAt && p - cutAt <= Tls.RECORD_HEADER }
                 val positions = (bounds + split)
                     .filter { it in 1 until repacked.size }
                     .distinct()

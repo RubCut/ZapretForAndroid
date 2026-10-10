@@ -32,12 +32,23 @@ class TlsrecWithSplitTest {
     @Test
     fun tlsrecRepackAloneSplitsAtRecordBoundaries() {
         val hello = StrategyAutopilotHelloFactory.build("www.youtube.com")
-        val plain = Strategy(desync = DesyncMode.TLSREC, tlsrecParts = 2)
+        // Дефолтные точки Strategy — [MIDSNI], поэтому рез идёт по точке,
+        // а не пополам; фиксируем это явно, чтобы тест не зависел от дефолтов.
+        val plain = Strategy(
+            desync = DesyncMode.TLSREC,
+            tlsrecParts = 2,
+            splitPositions = listOf(SplitPos.MIDSNI)
+        )
         val plan = engine.plan(hello, FlowContext(443, null, false), plain)
 
         assertTrue("переупаковка обязана применяться", plan.applied)
         assertTrue("ожидалось не меньше двух записей, получено ${plan.writes.size}", plan.writes.size >= 2)
-        assertEquals("длина потока не должна меняться", hello.size, plan.writes.sumOf { it.size })
+        // Переупаковка вставляет один лишний заголовок записи: длина растёт
+        // ровно на RECORD_HEADER, а не сохраняется.
+        assertEquals(
+            "переупаковка добавляет ровно один заголовок",
+            hello.size + Tls.RECORD_HEADER, plan.writes.sumOf { it.size }
+        )
     }
 
     /**
@@ -50,7 +61,11 @@ class TlsrecWithSplitTest {
 
         val tlsrecOnly = engine.plan(
             hello, FlowContext(443, null, false),
-            Strategy(desync = DesyncMode.TLSREC, tlsrecParts = 2)
+            Strategy(
+                desync = DesyncMode.TLSREC,
+                tlsrecParts = 2,
+                splitPositions = listOf(SplitPos.MIDSNI)
+            )
         )
         val both = engine.plan(
             hello, FlowContext(443, null, false),
@@ -111,10 +126,14 @@ class TlsrecWithSplitTest {
         val at = Tls.RECORD_HEADER + (recLen - Tls.RECORD_HEADER) / 2
 
         val out = Tls.repackRecordAt(hello, 0, hello.size, at) ?: error("рез не сработал")
-        val rebuilt = Tls.recordBoundaries(out, 0, out.size).fold(ByteArray(0)) { acc, from ->
-            val len = getU16(out, from + 3)
-            acc + out.copyOfRange(from + Tls.RECORD_HEADER, from + Tls.RECORD_HEADER + len)
-        }
+        // Тела обеих частей подряд — без заголовков: recordBoundaries отдаёт
+        // КОНЦЫ записей, складывать по ним тела напрямую нельзя.
+        val firstLen = getU16(out, 3)
+        val part1 = out.copyOfRange(Tls.RECORD_HEADER, Tls.RECORD_HEADER + firstLen)
+        val secondStart = Tls.RECORD_HEADER + firstLen
+        val secondLen = getU16(out, secondStart + 3)
+        val part2 = out.copyOfRange(secondStart + Tls.RECORD_HEADER, secondStart + Tls.RECORD_HEADER + secondLen)
+        val rebuilt = part1 + part2
         assertArrayEquals(
             "тело записи обязано собраться обратно без потерь",
             hello.copyOfRange(Tls.RECORD_HEADER, recLen),
@@ -144,10 +163,25 @@ class TlsrecWithSplitTest {
         )
         assertTrue("стратегия обязана применяться", plan.applied)
         val rebuilt = plan.writes.fold(ByteArray(0)) { acc, w -> acc + w }
+        // Сегменты склеиваются в переупакованный поток, где SNI лежит на
+        // границе записей. Парсер несколько записей не склеивает, поэтому
+        // перед разбором собираем ТЕЛА записей (recordBoundaries отдаёт КОНЦЫ,
+        // последний равен размеру — записью он не является).
+        val ends = Tls.recordBoundaries(rebuilt, 0, rebuilt.size)
+        var prev = 0
+        val bodies = java.io.ByteArrayOutputStream()
+        for (e in ends) {
+            if (e > rebuilt.size) break
+            val len = getU16(rebuilt, prev + 3)
+            if (prev + Tls.RECORD_HEADER + len > rebuilt.size) break
+            bodies.write(rebuilt, prev + Tls.RECORD_HEADER, len)
+            prev = e
+        }
+        val defrag = bodies.toByteArray()
         assertEquals(
             "SNI обязан остаться читаемым после переупаковки",
             "rr1---sn-gxuo03g-ig3s.googlevideo.com",
-            Tls.parseClientHello(rebuilt, 0, rebuilt.size)?.sni
+            Tls.parseClientHello(defrag, 0, defrag.size)?.sni
         )
     }
 
@@ -184,8 +218,8 @@ class TlsrecWithSplitTest {
             )
         }
         assertEquals(
-            "длина потока не должна меняться",
-            hello.size, plan.writes.sumOf { it.size }
+            "переупаковка добавляет ровно один заголовок",
+            hello.size + Tls.RECORD_HEADER, plan.writes.sumOf { it.size }
         )
     }
 }

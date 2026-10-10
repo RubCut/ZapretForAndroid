@@ -64,8 +64,10 @@ Android без root даёт приложению только один инст
 | цепочки `--new` | ✅ работает | приоритетные правила с собственным фильтром |
 | `--filter-tcp` / `--filter-udp` / `--wf-tcp` / `--wf-udp` | ✅ работает | `PortFilter` (диапазоны, списки) |
 | блокировка QUIC | ✅ работает | дроп UDP/443 для фильтруемых хостов |
-| `fake` | ⚠️ частично | только как «подставное» соединение; вставить фейк в тот же поток нельзя |
-| `disorder`, `multidisorder` | ❌ нужен root | требуется менять порядок сегментов на уровне IP |
+| `fake` | ✅ работает | пустышка с малым TTL в том же потоке (механика ByeDPI/ZapretYT); TTL подбирается — в автоподборе 4/6/8/11 |
+| `oob` | ✅ работает | `[данные + байт]` одним `sendto(MSG_OOB)`, как `r1.a` в ZapretYT |
+| `disorder`, `multidisorder` | ✅ работает | первый фрагмент с TTL=1 гибнет на хопе, ядро переотправляет (ByeDPI desync.c) — root не нужен |
+| `disoob` | ✅ работает | disorder + oob: хвост первым, начало со срочным байтом |
 | `syndata`, `synack` | ❌ нужен root | синтез TCP-пакетов |
 | `--dpi-desync-split-seqovl`, `fakedsplit`, `fakeddisorder` | ❌ нужен root | подделка sequence-номеров |
 | `rst`, `rstack` | ❌ нужен root | отправка пакетов вне потока |
@@ -397,7 +399,7 @@ Google; его можно и снять вручную.
 **неизвестно**, **ошибки**. Обратная операция — «Сгенерированная строка» — показывает текущую
 конфигурацию в синтаксисе zapret; её можно скопировать и сравнить с оригиналом.
 
-Поддерживаются: `--dpi-desync` (`split`, `multisplit`, `tlsrec`, `multisplit,tlsrec`, `hostfakesplit`, `none`),
+Поддерживаются: `--dpi-desync` (`split`, `multisplit`, `tlsrec`, `multisplit,tlsrec`, `hostfakesplit`, `oob`, `fake`, `disorder`, `disoob`, `none`),
 `--dpi-desync-split-pos`, `--dpi-desync-tlsrec`, `--dpi-desync-cutoff`, `--dpi-desync-any-protocol`,
 `--wssize=P:W`, `--filter-tcp`, `--filter-udp`, `--wf-tcp`, `--wf-udp`, `--hostlist`, `--hostlist-exclude`,
 `--hostlist-domains`, `--ipset`, `--ipset-exclude`, `--new`, а также собственное расширение `--split-delay=N`

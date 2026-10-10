@@ -72,10 +72,6 @@ object ZapretArgsParser {
         "fakeknown" to "требует raw-сокетов (root)",
         "syndata" to "требует raw-сокетов (root)",
         "synack" to "требует raw-сокетов (root)",
-        "disorder" to "пока не реализован (в ZapretYT работает без root через TTL — нужен порт)",
-        "disorder2" to "пока не реализован (в ZapretYT работает без root через TTL — нужен порт)",
-        "multidisorder" to "пока не реализован (в ZapretYT работает без root через TTL — нужен порт)",
-        "disoob" to "пока не реализован (комбинация disorder+oob из ZapretYT — нужен порт)",
         "fakeddisorder" to "требует raw-сокетов (root)",
         "rst" to "требует raw-сокетов (root)",
         "rstack" to "требует raw-сокетов (root)",
@@ -369,6 +365,8 @@ object ZapretArgsParser {
                 "multisplit" -> mode = DesyncMode.MULTISPLIT
                 "tlsrec" -> tlsrec = true
                 "oob" -> mode = DesyncMode.OOB
+                "disorder", "multidisorder", "disorder2" -> mode = DesyncMode.DISORDER
+                "disoob" -> mode = DesyncMode.DISOOB
                 "fake" -> mode = DesyncMode.FAKE
                 "hostfakesplit" -> mode = DesyncMode.HOSTFAKESPLIT
                 "none", "off" -> mode = DesyncMode.NONE

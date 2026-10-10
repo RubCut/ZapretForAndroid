@@ -400,7 +400,7 @@ class TcpConnection(
 
         // Приёмы, которым нужны параметры ядра, живут на дескрипторе самого
         // сокета. Создаётся лениво — для обычных стратегий он не нужен вовсе.
-        val raw = if (plan.urgentByte != null || plan.fakeTtl > 0) {
+        val raw = if (plan.urgentByte != null || plan.fakeTtl > 0 || plan.ttl1Indices.isNotEmpty()) {
             runCatching { RawSocket(socket) }.getOrNull()
         } else {
             null
@@ -463,48 +463,74 @@ class TcpConnection(
                 if (pause > 0) delay(pause.toLong())
             }
 
-            // OOB как у эталона r1.a: первый фрагмент уходит ВМЕСТЕ со срочным
-            // байтом одним вызовом sendto(MSG_OOB), остаток — обычными записями
-            // следом. Если MSG_OOB не взялся — первый фрагмент дописывается
-            // обычно БЕЗ байта (байт отбрасывается, а не дублируется), приём
-            // вырождается в обычный разрез.
+            // Порядок и параметры отправки фрагментов — из плана, механика
+            // ByeDPI desync.c (там же работает без root на обычном сокете):
+            // - oob: [голова + байт] одним sendto(MSG_OOB), остаток — обычно;
+            // - disoob (tailFirst): сначала хвост обычно, затем [голова + байт]
+            //   через MSG_OOB — на проводе обратный порядок, сервер собирает
+            //   по sequence, срочный байт из потока выпадает;
+            // - disorder (ttl1Indices): помеченные фрагменты уходят с TTL=1 и
+            //   гибнут на первом хопе, ядро само их переотправляет после SACK —
+            //   порядок на проводе ломается, поток цел.
+            // Не взялся MSG_OOB/TTL — фрагмент уходит обычной записью: приём
+            // вырождается в разрез, но поток не ломается.
             var oobOk = plan.urgentByte == null
-            if (plan.urgentByte != null) {
-                val urgent = plan.urgentByte and 0xFF
-                val first = plan.writes.firstOrNull() ?: ByteArray(0)
-                val rest = plan.writes.drop(1)
-                oobOk = raw?.sendWithOob(first, urgent) == true
-                if (oobOk) {
-                    TrafficStats.up(first.size)
+            var ttl1Ok = plan.ttl1Indices.isEmpty()
+            val urgent = (plan.urgentByte ?: 0) and 0xFF
+            val order: List<Int> =
+                if (plan.tailFirst && plan.writes.size >= 2) {
+                    (1 until plan.writes.size).toList() + listOf(0)
                 } else {
-                    LogManager.w("DPI: OOB не взялся — ушёл обычный разрез")
-                    out.write(first)
-                    out.flush()
-                    TrafficStats.up(first.size)
+                    plan.writes.indices.toList()
                 }
-                for ((index, write) in rest.withIndex()) {
-                    out.write(write)
-                    out.flush()
-                    TrafficStats.up(write.size)
-                    if (index < rest.size - 1 && strategy.splitDelayMs > 0) {
-                        delay(strategy.splitDelayMs.toLong())
+            for ((step, idx) in order.withIndex()) {
+                val write = plan.writes[idx]
+                when {
+                    plan.urgentByte != null && idx == 0 -> {
+                        oobOk = raw?.sendWithOob(write, urgent) == true
+                        if (!oobOk) {
+                            LogManager.w("DPI: OOB не взялся — ушёл обычный разрез")
+                            out.write(write)
+                            out.flush()
+                        }
+                        TrafficStats.up(write.size)
+                    }
+                    plan.ttl1Indices.contains(idx) -> {
+                        var sent = false
+                        if (raw != null && raw.setTtl(DISORDER_TTL1)) {
+                            try {
+                                out.write(write)
+                                out.flush()
+                                sent = true
+                            } catch (_: Exception) {
+                                sent = false
+                            } finally {
+                                raw.resetTtl()
+                            }
+                        }
+                        if (!sent) {
+                            ttl1Ok = false
+                            LogManager.w("DPI: TTL=1 недоступен — disorder вырождается в разрез")
+                            out.write(write)
+                            out.flush()
+                        }
+                        TrafficStats.up(write.size)
+                    }
+                    else -> {
+                        out.write(write)
+                        out.flush()
+                        TrafficStats.up(write.size)
                     }
                 }
-            } else {
-                for ((index, write) in plan.writes.withIndex()) {
-                    out.write(write)
-                    out.flush()
-                    TrafficStats.up(write.size)
-                    if (index < plan.writes.size - 1 && strategy.splitDelayMs > 0) {
-                        delay(strategy.splitDelayMs.toLong())
-                    }
+                if (step < order.size - 1 && strategy.splitDelayMs > 0) {
+                    delay(strategy.splitDelayMs.toLong())
                 }
             }
-            // Если OOB не взялся, в журнал честно пишем разрез: приём с
-            // байтом не состоялся, хвастаться им нельзя.
-            val technique =
-                if (plan.applied && plan.urgentByte != null && !oobOk) plan.technique + " (без oob)"
-                else plan.technique
+            // Если приёмы не взялись, в журнал честно пишем разрез: хвастаться
+            // несработавшим приёмом нельзя.
+            var technique = plan.technique
+            if (plan.applied && plan.urgentByte != null && !oobOk) technique += " (без oob)"
+            if (plan.applied && plan.ttl1Indices.isNotEmpty() && !ttl1Ok) technique += " (без ttl1)"
             if (plan.applied) {
                 TrafficStats.desynced()
                 desyncApplied = technique
@@ -916,6 +942,12 @@ class TcpConnection(
 
     private companion object {
         const val WINDOW_FIELD = 65535
+        /**
+         * TTL гибнущей копии для `--disorder` — буквально как в ByeDPI
+         * (`setttl(sfd, 1)`): пакет умирает на первом хопе, DPI его видит,
+         * а сервер — нет; ядро переотправляет фрагмент само.
+         */
+        const val DISORDER_TTL1 = 1
         const val MAX_INFLIGHT = 512 * 1024
         const val MAX_RETRANSMITS = 9
         const val MAX_INITIAL_BLOCK = 32 * 1024

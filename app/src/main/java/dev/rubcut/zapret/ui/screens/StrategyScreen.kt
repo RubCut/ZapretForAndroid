@@ -83,12 +83,14 @@ import dev.rubcut.zapret.ui.components.SwitchRow
 
 private val desyncModes = listOf(
     DesyncMode.NONE, DesyncMode.SPLIT, DesyncMode.MULTISPLIT,
-    DesyncMode.TLSREC, DesyncMode.MULTISPLIT_TLSREC, DesyncMode.HOSTFAKESPLIT
+    DesyncMode.TLSREC, DesyncMode.MULTISPLIT_TLSREC, DesyncMode.HOSTFAKESPLIT,
+    DesyncMode.OOB, DesyncMode.FAKE, DesyncMode.DISORDER, DesyncMode.DISOOB
 )
 
 private val desyncLabels = listOf(
     R.string.desync_none, R.string.desync_split, R.string.desync_multisplit,
-    R.string.desync_tlsrec, R.string.desync_multitlsrec, R.string.desync_hostfakesplit
+    R.string.desync_tlsrec, R.string.desync_multitlsrec, R.string.desync_hostfakesplit,
+    R.string.desync_oob, R.string.desync_fake, R.string.desync_disorder, R.string.desync_disoob
 )
 
 private val splitPositions = listOf(
@@ -351,7 +353,18 @@ fun StrategyControls(strategy: Strategy, onChange: (Strategy) -> Unit) {
     ChipSelector(
         options = desyncLabels.map { stringResource(it) },
         selectedIndex = desyncModes.indexOf(strategy.desync).coerceAtLeast(0),
-        onSelect = { i -> onChange(strategy.copy(desync = desyncModes[i])) }
+        onSelect = { i ->
+            val m = desyncModes[i]
+            var s = strategy.copy(desync = m)
+            // Режимы на параметрах сокета без значений молча вырождаются в
+            // прямое соединение — подставляем рабочие умолчания сразу при
+            // выборе, как это делает автоподбор программно.
+            if ((m == DesyncMode.OOB || m == DesyncMode.DISOOB) && s.urgentByte == null) {
+                s = s.copy(urgentByte = 0)
+            }
+            if (m == DesyncMode.FAKE && s.fakeTtl <= 0) s = s.copy(fakeTtl = 8)
+            onChange(s)
+        }
     )
 
     Spacer(Modifier.height(16.dp))

@@ -92,6 +92,10 @@
     <string name="desync_tlsrec">tlsrec</string>
     <string name="desync_multitlsrec">multisplit + tlsrec</string>
     <string name="desync_hostfakesplit">hostfakesplit (HTTP)</string>
+    <string name="desync_oob">oob (urgent byte)</string>
+    <string name="desync_fake">fake (TTL decoy)</string>
+    <string name="desync_disorder">disorder (reorder)</string>
+    <string name="desync_disoob">disoob (reorder + OOB)</string>
     <string name="strategy_desync_hint">The mode defines how the TLS ClientHello is broken into several TCP segments. DPI usually only parses the first segment of a flow, so a split handshake goes unrecognised.</string>
     <string name="strategy_split_pos">Split points</string>
     <string name="strategy_split_pos_hint">The --dpi-desync-split-pos equivalent. Several can be selected.</string>

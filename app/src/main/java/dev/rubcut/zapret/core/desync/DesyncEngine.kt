@@ -58,7 +58,23 @@ class DesyncPlan(
      * SNI. Отдельно от [writes], как и [poison]: настоящие данные идут следом
      * обычным способом.
      */
-    val fakeDummy: ByteArray? = null
+    val fakeDummy: ByteArray? = null,
+    /**
+     * Хвост [writes] уходит раньше начала (`--disoob`).
+     *
+     * По эталону ByeDPI (`--disoob 3`: отправка `3-30, 1-4+URG`) хвост потока
+     * пишется первым обычной записью, а начало — вторым вместе со срочным
+     * байтом. Сервер пересобирает по sequence, фильтр видит обратный порядок.
+     */
+    val tailFirst: Boolean = false,
+    /**
+     * Индексы фрагментов [writes], уходящих с TTL=1 (`--disorder`).
+     *
+     * По эталону ByeDPI фрагмент с TTL=1 умирает на первом хопе, а ядро само
+     * переотправляет его после SACK от сервера — порядок на проводе ломается
+     * без единого raw-сокета. Пусто — обычный TTL для всех фрагментов.
+     */
+    val ttl1Indices: Set<Int> = emptySet()
 ) {
     val segmentCount: Int get() = writes.size
 
@@ -162,6 +178,39 @@ class DesyncEngine {
                 )
             }
             return giveUp("нет точки разбиения для OOB")
+        }
+        // DISORDER/DISOOB — те же точки разбиения, что у OOB, но другая
+        // механика отправки (см. DesyncPlan.tailFirst/ttl1Indices и ByeDPI
+        // desync.c: TTL=1 для гибнущей копии + обратный порядок для disoob).
+        if (s.desync == DesyncMode.DISORDER) {
+            val positions = collectPositions(s, data, hello, httpHostRange)
+                .filter { it in 1 until data.size }
+                .distinct()
+                .sorted()
+            val writes = splitAt(data, positions)
+            if (writes.size >= 2) {
+                return DesyncPlan(
+                    writes, true, "${lead}disorder → ${writes.size} записей", host,
+                    poison, s.poisonDelayMs, ttl1Indices = setOf(0)
+                )
+            }
+            return giveUp("нет точки разбиения для disorder")
+        }
+        if (s.desync == DesyncMode.DISOOB) {
+            val urgent = s.urgentByte ?: return giveUp("не задан OOB-байт")
+            val positions = collectPositions(s, data, hello, httpHostRange)
+                .filter { it in 1 until data.size }
+                .distinct()
+                .sorted()
+            val writes = splitAt(data, positions)
+            if (writes.size >= 2) {
+                return DesyncPlan(
+                    writes, true, "${lead}disoob → ${writes.size} записей", host,
+                    poison, s.poisonDelayMs, urgentByte = urgent and 0xFF,
+                    tailFirst = true
+                )
+            }
+            return giveUp("нет точки разбиения для disoob")
         }
         if (s.desync == DesyncMode.FAKE) {
             if (s.fakeTtl <= 0) return giveUp("не задан TTL пустышки")

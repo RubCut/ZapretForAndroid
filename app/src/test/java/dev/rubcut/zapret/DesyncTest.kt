@@ -7,6 +7,7 @@ import dev.rubcut.zapret.core.split.Segmenter
 import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -257,6 +258,79 @@ class DesyncTest {
             Strategy(desync = DesyncMode.FAKE, fakeTtl = 0)
         )
         assertTrue("FAKE без TTL обязан отказаться", !p.applied)
+    }
+
+    /**
+     * DISORDER обязан дать разбиение с пометкой гибнущего фрагмента.
+     *
+     * Механика ByeDPI desync.c: первый фрагмент уходит с TTL=1 (гибнет на
+     * первом хопе, ядро переотправляет), остаток — обычно. План несёт сами
+     * байты и пометку ttl1Indices; отправкой занимается сокет.
+     */
+    @Test
+    fun disorderBranchMarksHeadWithTtl1() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.DISORDER, splitPositions = listOf(SplitPos.MIDSNI))
+        )
+        assertTrue("DISORDER обязан применяться", p.applied)
+        assertTrue("DISORDER без разбиения бессмысленен: ${p.writes.size}", p.writes.size >= 2)
+        assertTrue("голова обязана идти с TTL=1", p.ttl1Indices.contains(0))
+        assertTrue("срочного байта здесь нет: ${p.urgentByte}", p.urgentByte == null)
+        assertTrue("порядок прямой, хвост не впереди", !p.tailFirst)
+        // Байты не теряются: склейка фрагментов даёт исходник целиком.
+        assertArrayEquals(
+            "фрагменты обязаны склеиваться в исходный ClientHello",
+            helloFor("www.youtube.com"), p.writes.fold(ByteArray(0)) { acc, w -> acc + w }
+        )
+    }
+
+    /** DISORDER без точки разбиения — отказ, а не молчаливый прогон. */
+    @Test
+    fun disorderWithoutSplitPointGivesUp() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.DISORDER, splitPositions = listOf(SplitPos.SNIEND))
+        )
+        // SNIEND для минимального hello может совпасть с концом буфера —
+        // тогда разбивать нечего и план обязан честно отказаться.
+        if (p.writes.size < 2) assertTrue("без разбиения DISORDER обязан отказаться", !p.applied)
+    }
+
+    /**
+     * DISOOB: хвост впереди, голова со срочным байтом.
+     *
+     * Механика ByeDPI (`--disoob 3`: отправка `3-30, 1-4+URG`): хвост уходит
+     * первым обычной записью, начало — вторым вместе со срочным байтом одним
+     * sendto(MSG_OOB). Сервер собирает по sequence, фильтр видит обратный
+     * порядок без срочного байта в потоке.
+     */
+    @Test
+    fun disoobBranchEmitsTailFirstWithUrgentByte() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.DISOOB, splitPositions = listOf(SplitPos.MIDSNI), urgentByte = 0)
+        )
+        assertTrue("DISOOB обязан применяться", p.applied)
+        assertTrue("DISOOB без разбиения бессмысленен: ${p.writes.size}", p.writes.size >= 2)
+        assertTrue("хвост обязан идти первым", p.tailFirst)
+        assertTrue("байт обязан дойти до сокета, а там ${p.urgentByte}", p.urgentByte == 0)
+        // Байты не теряются и не дублируются в самом плане: порядок меняет
+        // отправка, а не набор фрагментов.
+        assertArrayEquals(
+            "фрагменты обязаны склеиваться в исходный ClientHello",
+            helloFor("www.youtube.com"), p.writes.fold(ByteArray(0)) { acc, w -> acc + w }
+        )
+    }
+
+    /** DISOOB без заданного байта (null) — отказ, а не молчаливый разрез. */
+    @Test
+    fun disoobWithoutByteGivesUp() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.DISOOB, splitPositions = listOf(SplitPos.MIDSNI), urgentByte = null)
+        )
+        assertTrue("без байта DISOOB обязан отказаться, а не резать молча", !p.applied)
     }
 }
 

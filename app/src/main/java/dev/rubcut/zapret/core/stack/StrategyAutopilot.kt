@@ -106,6 +106,26 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 splitDelayMs = 2,
                 urgentByte = 0
             ),
+            // Перемежение и связка с OOB (ByeDPI desync.c — всё без root через
+            // TTL=1 и MSG_OOB на обычном сокете). В эталоне ZapretYT рядом с
+            // `--oob=0+wm` идут `[Disorder 0+wm] --disorder=0+wm` и
+            // `[OOB 1] --oob=1`, поэтому оба положения проверяем и здесь.
+            "disorder · середина домена (0+wm)" to Strategy(
+                desync = DesyncMode.DISORDER,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2
+            ),
+            "disorder · первый байт" to Strategy(
+                desync = DesyncMode.DISORDER,
+                splitPositions = listOf(SplitPos.FIRST),
+                splitDelayMs = 2
+            ),
+            "disoob · середина домена (0+wm)" to Strategy(
+                desync = DesyncMode.DISOOB,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                urgentByte = 0
+            ),
 
             // Эталон перебирает fake с TTL 4/6/8/11 (`--fake=-1 --ttl=N`):
             // у разных провайдеров умирает на разном хопе. Оставляем 8 первым

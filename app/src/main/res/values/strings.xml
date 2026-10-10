@@ -97,6 +97,10 @@
     <string name="desync_tlsrec">tlsrec</string>
     <string name="desync_multitlsrec">multisplit + tlsrec</string>
     <string name="desync_hostfakesplit">hostfakesplit (HTTP)</string>
+    <string name="desync_oob">oob (срочный байт)</string>
+    <string name="desync_fake">fake (пустышка TTL)</string>
+    <string name="desync_disorder">disorder (перемежение)</string>
+    <string name="desync_disoob">disoob (перемежение + OOB)</string>
     <string name="strategy_desync_hint">Режим определяет, как именно TLS ClientHello разбивается на несколько TCP-сегментов. DPI обычно разбирает только первый сегмент потока, поэтому разбитое рукопожатие он не распознаёт.</string>
     <string name="strategy_split_pos">Точки разбиения</string>
     <string name="strategy_split_pos_hint">Аналог --dpi-desync-split-pos. Можно выбрать несколько.</string>

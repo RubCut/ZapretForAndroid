@@ -95,11 +95,16 @@ class ConfigRepository(private val context: Context, scope: CoroutineScope) {
      */
     private fun migrate(cfg: AppConfig): AppConfig = migrateConfig(cfg)
 
-    /**
+    private companion object {
+        val CONFIG_KEY: Preferences.Key<String> = stringPreferencesKey("config_json")
+    }
+}
+
+/**
  * Освежение конфигурации при смене схемы.
  *
- * Отдельно от класса, чтобы её можно было проверить в JVM-тесте: репозиторий
- * требует Context, а чистая функция — нет.
+ * Вне класса намеренно: репозиторию нужен Context, а чистая функция позволяет
+ * проверить миграцию в обычном JVM-тесте.
  *
  * Про DNS: прежняя схема при сбое DoH НАВСЕГДА писала `dnsMode = SYSTEM`, и
  * режим застревал навсегда — имена резолвились через DNS провайдера, который
@@ -121,9 +126,4 @@ internal fun migrateConfig(cfg: AppConfig): AppConfig {
         dnsMode = dns,
         configVersion = CURRENT_CONFIG_VERSION
     )
-}
-
-    private companion object {
-        val CONFIG_KEY: Preferences.Key<String> = stringPreferencesKey("config_json")
-    }
 }

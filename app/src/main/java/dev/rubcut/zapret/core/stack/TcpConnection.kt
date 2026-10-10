@@ -83,8 +83,17 @@ class TcpConnection(
 
     private val clientIsn: Int = syn.seq
     private val ourIsn: Int = Random.nextInt()
+
+    // Читаются из потока насоса, пишутся из потока чтения tun — без volatile
+    // компилятор вправе закэшировать значения и отправить клиенту сегмент
+    // со старым ack, который он отбросит как дубликат.
+    @Volatile
     private var rcvNext: Int = seqAdd(clientIsn, 1)
+
+    @Volatile
     private var sndUna: Int = seqAdd(ourIsn, 1)
+
+    @Volatile
     private var sndNxt: Int = seqAdd(ourIsn, 1)
     private var queueTailSeq: Int = sndNxt
 
@@ -116,14 +125,41 @@ class TcpConnection(
 
     private val inboundBytes = AtomicInteger(0)
 
+    /**
+     * Мы уже объявили клиенту нулевое окно и ждём, пока он перестанет слать.
+     *
+     * Пока флаг стоит, насос обязан отправлять обновление окна, иначе клиент
+     * остаётся с нулевым окном навсегда: новых сегментов от него не будет, а
+     * окно мы пересчитываем только внутри отправляемых пакетов. Восстановление
+     * зависело лишь от того, что клиент сам пришлёт zero-window probe, и видео
+     * выглядело как «вечная буферизация».
+     */
+    @Volatile
+    private var zeroWindowAdvertised = false
+
     /** Рекламируемое окно с учётом заполненности входящей очереди. */
     private fun advertiseWindow(): Int {
         val free = INBOUND_LIMIT - inboundBytes.get()
-        return when {
+        val value = when {
             free <= 0 -> 0
             free < 64 * 1024 -> ((free shr ourWscale) + 1).coerceIn(1, WINDOW_FIELD)
             else -> WINDOW_FIELD
         }
+        if (value == 0) zeroWindowAdvertised = true
+        return value
+    }
+
+    /**
+     * Обновить окно, если раньше оно было нулевым, а очередь уже разгружена.
+     *
+     * Отправляется ровно один сегмент с чистым ACK — этого достаточно, чтобы
+     * клиент продолжил передачу.
+     */
+    private fun releaseZeroWindow() {
+        if (!zeroWindowAdvertised) return
+        if (inboundBytes.get() > INBOUND_LIMIT - 64 * 1024) return
+        zeroWindowAdvertised = false
+        sendAck()
     }
 
     private var wssizeBytesSeen = 0
@@ -316,6 +352,10 @@ class TcpConnection(
         }
 
         val first = initial ?: ByteArray(0)
+        // Стартовый блок уже разобран — если до этого было объявлено нулевое
+        // окно, клиент должен получить обновление, иначе он не начнёт слать
+        // Application Data (HTTP/2 целиком идёт после рукопожатия).
+        releaseZeroWindow()
         if (first.isNotEmpty()) {
             deliverInitial(out, socket, first)
         }
@@ -326,6 +366,7 @@ class TcpConnection(
             if (chunk == null) break
             if (chunk.isEmpty()) continue
             inboundBytes.addAndGet(-chunk.size)
+            releaseZeroWindow()
             out.write(chunk)
             out.flush()
             TrafficStats.up(chunk.size)

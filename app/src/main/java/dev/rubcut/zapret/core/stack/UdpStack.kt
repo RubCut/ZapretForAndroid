@@ -26,7 +26,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,8 +52,22 @@ class UdpStack(
 ) {
 
     private val threadIndex = AtomicInteger()
-    private val executor = ThreadPoolExecutor(2, 192, 30L, TimeUnit.SECONDS, SynchronousQueue()) { r ->
+
+    /**
+     * Тот же дефект, что был в TCP-стеке: SynchronousQueue отбрасывал задачи
+     * мгновенно при переполнении, а приём датаграмм блокирующий и держит поток
+     * всё время жизни сессии. Голос Discord держит UDP-сессии десятками секунд,
+     * поэтому пул уходил в переполнение и релей молча переставал работать.
+     */
+    private val executor = ThreadPoolExecutor(
+        4, 128, 30L, TimeUnit.SECONDS, LinkedBlockingQueue(32)
+    ) { r ->
         Thread(r, "zapret-udp-${threadIndex.incrementAndGet()}").apply { isDaemon = true }
+    }.apply {
+        allowCoreThreadTimeOut(true)
+        setRejectedExecutionHandler { _, _ ->
+            LogManager.w(LogTag.UDP, "Пул потоков UDP переполнен — сессия не будет создана")
+        }
     }
     private val io: CoroutineDispatcher = executor.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + io)

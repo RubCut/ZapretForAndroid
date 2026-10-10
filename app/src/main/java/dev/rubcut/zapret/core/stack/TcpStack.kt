@@ -19,7 +19,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import java.io.OutputStream
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -90,12 +90,46 @@ class TcpStack(
 ) {
 
     private val threadIndex = AtomicInteger()
+
+    /**
+     * Пул потоков для стека.
+     *
+     * Раньше стоял SynchronousQueue: у него нулевая ёмкость, поэтому при
+     * `workerCount >= maximumPoolSize` execute() бросал RejectedExecutionException
+     * МГНОВЕННО, без всякой очереди. Это ломало всё сразу, как только
+     * одновременных задач становилось больше 384 — а их столько набирается
+     * легко: чтение из upstream-сокета блокирующее и держит поток всё время
+     * жизни соединения, плюс connect() висит до connectTimeoutMs.
+     *
+     * YouTube при старте открывает пачку соединений разом, и пул уходил в
+     * переполнение. Дальше launch() падал, pumpTo/pumpFromUpstream не
+     * запускались, pumpUp.join() ждал вечно — соединение зависало навсегда и
+     * занимало слот в maxConnections. Спустя несколько таких пакетов туннель
+     * переставал работать целиком.
+     *
+     * Теперь: небольшая ограниченная очередь вместо отказа, allowCoreThreadTimeOut —
+     * чтобы пул доросал под нагрузкой и снова сжимался, и явный обработчик
+     * отказа, который пишет в журнал, а не роняет соединение молча.
+     *
+     * Очередь маленькая не просто так: ThreadPoolExecutor наращивает число потоков
+     * только когда очередь заполнена, поэтому большая ёмкость держала бы пул на
+     * восьми потоках и душила бы чтения из сокетов. 128 — это компромисс: пул
+     * разрастается быстро, но до отказа дело доходит лишь при тысяче соединений.
+     */
     private val executor = ThreadPoolExecutor(
-        4, 384, 30L, TimeUnit.SECONDS, SynchronousQueue()
+        8, 320, 30L, TimeUnit.SECONDS, LinkedBlockingQueue(128)
     ) { r ->
         Thread(r, "zapret-tcp-${threadIndex.incrementAndGet()}").apply {
             isDaemon = true
             priority = Thread.NORM_PRIORITY + 1
+        }
+    }.apply {
+        allowCoreThreadTimeOut(true)
+        setRejectedExecutionHandler { runnable, _ ->
+            LogManager.w(
+                LogTag.TCP,
+                "Пул потоков стека переполнен — задача отброшена, соединение не будет обработано"
+            )
         }
     }
 

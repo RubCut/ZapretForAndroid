@@ -338,21 +338,52 @@ class StrategyAutopilot(private val stack: TcpStack) {
         return out
     }
 
-    /** Одна проверка: полный рукопожатный цикл через стек с принудительной стратегией. */
-    suspend fun probe(
+    /**
+     * Как именно сервер отреагировал на ClientHello.
+     *
+     * Разведённые результаты важнее одного «работает/не работает»: по ним
+     * видно, фильтр ли молчит, сервер ли отвергает рукопожатие, или до
+     * сервера дело не доходит вовсе.
+     */
+    enum class Verdict {
+        /** Получен 0x16 — сервер дошёл до ответа, обход сработал. */
+        HELLO,
+
+        /** Получен 0x15 alert: сервер отверг рукопожатие, но ответил. */
+        ALERT,
+
+        /** Ответ есть, но это не TLS (0x16/0x15) — перед нами чужой сервер. */
+        GARBAGE,
+
+        /** SYN-ACK есть, дальше тишина — это и есть блокировка. */
+        SILENCE,
+
+        /** SYN-ACK не пришёл: до отправки ClientHello дело не дошло. */
+        NO_SYNACK,
+
+        /** Таймаут зонда. */
+        TIMEOUT,
+    }
+
+    /**
+     * Одна проверка с разбором ответа.
+     *
+     * [probe] — обёртка над этим методом, оставлена ради прежних вызовов.
+     */
+    suspend fun probeVerdict(
         addr: InetAddress,
         port: Int,
         host: String,
         strategy: Strategy,
         timeoutMs: Long = 6000
-    ): Boolean = withTimeoutOrNull(timeoutMs) {
+    ): Verdict = withTimeoutOrNull(timeoutMs) {
         // Эфемерные порты, а не весь диапазон: младшие (<1024) привилегированы,
         // а 0 и вовсе недопустим как порт источника.
         val clientPort = 32768 + (portCounter.incrementAndGet() % 28232)
         val clientIsn = Random.nextInt()
         val captured = Channel<ByteArray>(Channel.UNLIMITED)
         val tap: (ByteArray) -> Unit = { p -> captured.trySend(p) }
-        var result = false
+        var result = Verdict.TIMEOUT
         stack.packetWriter.tap = tap
         stack.probeFor = clientPort to strategy
         try {
@@ -367,7 +398,8 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 // Молчание на этом этапе — не DPI, а мёртвый IP или сеть:
                 // до отправки ClientHello дело вообще не дошло.
                 LogManager.d(LogTag.DPI, "зонд $host:${port} «${strategyLabel(strategy)}» → нет SYN-ACK за 4 с")
-                return@withTimeoutOrNull false
+                result = Verdict.NO_SYNACK
+                return@withTimeoutOrNull result
             }
             val saIp = parseIp(synAck, synAck.size)!!
             val sa = parseTcp(synAck, saIp.payloadOffset, saIp.payloadLength)!!
@@ -396,20 +428,30 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 // SYN-ACK был, а ответа на ClientHello нет — вот это уже
                 // почерк DPI: рукопожатие дошло до сервера, дальше тишина.
                 LogManager.d(LogTag.DPI, "зонд $host:${port} «${strategyLabel(strategy)}» → SYN-ACK есть, ответа на ClientHello нет")
-                return@withTimeoutOrNull false
+                result = Verdict.SILENCE
+                return@withTimeoutOrNull result
             }
 
             val ip = parseIp(down, down.size)!!
             val seg = parseTcp(down, ip.payloadOffset, ip.payloadLength)!!
             val first = down[ip.payloadOffset + seg.headerLen].toInt() and 0xFF
             // 0x16 — TLS Handshake: сервер дошёл до ответа на ClientHello.
-            // 0x15 (alert) и мусор означают, что обход не сработал.
-            result = first == 0x16
+            // 0x15 (alert) и мусор означают, что обход не сработал либо
+            // мы вообще говорим не с тем сервером.
+            result = when (first) {
+                0x16 -> Verdict.HELLO
+                0x15 -> Verdict.ALERT
+                else -> Verdict.GARBAGE
+            }
             LogManager.d(
                 LogTag.DPI,
                 "зонд $host:${port} «${strategyLabel(strategy)}» → ответ 0x%02x (%s)".format(
                     first,
-                    if (result) "ServerHello" else "отказ сервера или обхода"
+                    when (result) {
+                        Verdict.HELLO -> "ServerHello"
+                        Verdict.ALERT -> "alert, сервер отверг рукопожатие"
+                        else -> "не TLS, перед нами не тот сервер"
+                    }
                 )
             )
         } finally {
@@ -422,7 +464,17 @@ class StrategyAutopilot(private val stack: TcpStack) {
             }
         }
         result
-    } ?: false
+    } ?: Verdict.TIMEOUT
+
+    /** Прежний интерфейс: удалось ли получить ServerHello. Разбор ответа —
+     *  в [probeVerdict]. */
+    suspend fun probe(
+        addr: InetAddress,
+        port: Int,
+        host: String,
+        strategy: Strategy,
+        timeoutMs: Long = 6000
+    ): Boolean = probeVerdict(addr, port, host, strategy, timeoutMs) == Verdict.HELLO
 
     /* ------------------------------------------------------------ */
 

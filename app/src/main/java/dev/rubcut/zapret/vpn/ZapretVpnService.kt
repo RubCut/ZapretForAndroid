@@ -295,7 +295,34 @@ class ZapretVpnService : VpnService() {
 
     /* ------------------------------------------------------------ */
 
-    private fun startVpn() {
+    /**
+     * Локальные сети выводятся из-под туннеля.
+     *
+     * Маршрут 0.0.0.0/0 забирает ВЕСЬ трафик телефона, включая обращения к
+     * локальной сети. Из-за этого с телефоном перестаёт общаться всё, что
+     * рядом: ноутбук в той же Wi-Fi-сети не может открыть ни страницу на
+     * телефоне, ни страницу, которую телефон сам раздаёт. Для проверки обхода
+     * это особенно неудобно — компьютер нужен как пульт управления.
+     *
+     * Исключаются только RFC1918-сети 192.168/16 и 172.16/12 плюс
+     * link-local 169.254/16. Сеть 10/8 намеренно НЕ исключается: собственные
+     * адреса туннеля и виртуальных клиентов лежат именно в ней
+     * ([VPN_ADDR_V4] = 10.211.0.1), и выбрасывать её из маршрутизации значило
+     * бы ломать собственный стек приложения.
+     */
+    private fun applyLanExclusions(builder: VpnService.Builder) {
+        val nets = listOf(
+            "192.168.0.0" to 16,
+            "172.16.0.0" to 12,
+            "169.254.0.0" to 16
+        )
+        for ((addr, prefix) in nets) {
+            runCatching { builder.addExcludedRoute(addr, prefix) }
+                .onFailure { LogManager.w("Не удалось исключить локальную сеть $addr/$prefix: ${it.message}") }
+        }
+    }
+
+    private suspend fun startVpn() {
         if (running) {
             updateNotification()
             return
@@ -426,6 +453,8 @@ class ZapretVpnService : VpnService() {
             }
         }
         if (!hasV4 && !hasV6) throw IllegalStateException("не удалось назначить адрес туннелю")
+
+        applyLanExclusions(builder)
 
         applyAppScope(builder, cfg)
 

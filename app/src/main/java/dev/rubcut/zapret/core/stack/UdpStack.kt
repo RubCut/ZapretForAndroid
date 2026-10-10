@@ -180,7 +180,9 @@ class UdpStack(
                 try {
                     sock = DatagramSocket(null)
                     protector.protect(sock)
-                    sock.soTimeout = 0
+                    // Не нулевой: нулевой таймаут означает блокировку навсегда,
+                    // а нам нужно периодически отпускать поток пула (см. ниже).
+                    sock.soTimeout = UDP_RECV_TIMEOUT_MS
                     sock.connect(InetSocketAddress(key.dst, key.dstPort))
                     socket = sock
                     val queued = synchronized(this) {
@@ -196,18 +198,33 @@ class UdpStack(
                             LogManager.d(LogTag.UDP, "UDP flush ${key.dst}:${key.dstPort}: ${e.message}")
                         }
                     }
+                    // receive() ниже вызывается с soTimeout, а не блокируется
+                    // навсегда. Иначе каждая сессия навсегда занимала один поток
+                    // пула на все udpTimeoutSec (60 с по умолчанию), и при
+                    // десятках одновременных сессий пул исчерпывал себя — релей
+                    // переставал работать, о чём честно говорит журнал:
+                    // «UDP: пул потоков переполнен».
                     val buf = ByteArray(64 * 1024)
                     while (scope.isActive && !closed) {
                         val packet = DatagramPacket(buf, buf.size)
-                        val ok = withContext(io) {
+                        val got = withContext(io) {
                             try {
                                 sock.receive(packet)
                                 true
-                            } catch (e: Exception) {
+                            } catch (e: java.net.SocketTimeoutException) {
                                 false
+                            } catch (e: Exception) {
+                                LogManager.d(LogTag.UDP, "UDP receive ${key.dst}:${key.dstPort}: ${e.message}")
+                                true
                             }
                         }
-                        if (!ok) break
+                        if (closed) break
+                        // Не таймаут, а приход данных.
+                        if (!got) {
+                            // Порция работы закончена — отдаём поток пулу.
+                            delay(UDP_IDLE_SLEEP_MS)
+                            continue
+                        }
                         touch()
                         val reply = PacketBuilder.udp(
                             v6 = v6, src = key.dst, dst = key.src,
@@ -269,5 +286,11 @@ class UdpStack(
     private companion object {
         const val MAX_SESSIONS = 256
         const val MAX_PENDING = 8
+
+        /** Сколько ждём очередную датаграмму, прежде чем отпустить поток пула. */
+        const val UDP_RECV_TIMEOUT_MS = 1000
+
+        /** Пауза после таймаута: coroutine suspension, а не занятый поток. */
+        const val UDP_IDLE_SLEEP_MS = 50L
     }
 }

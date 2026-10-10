@@ -101,6 +101,40 @@ class RegressionsTest {
         assertEquals(hello.size, info.recordLength)
     }
 
+    /**
+     * Зонд обязан выглядеть как настоящий браузер, иначе его дропает фильтр.
+     *
+     * Наблюдение с устройства: при hello без `key_share` (при том, что
+     * `supported_versions` объявляет TLS 1.3) провайдерский DPI отбрасывал
+     * пакет МОЛЧА, без alert. Итог — «тишина после SYN-ACK» на всех
+     * кандидатах, включая полностью прозрачный, и автоподбор не мог найти
+     * победителя в принципе: отбрасывалось даже то, что обязано работать.
+     *
+     * Реальный браузер всегда шлёт `key_share` вместе с TLS 1.3, плюс
+     * `psk_key_exchange_modes` и `session_ticket`.
+     */
+    @Test
+    fun probeClientHelloLooksLikeBrowser() {
+        val hello = StrategyAutopilot.clientHelloFor("www.youtube.com")
+        val parsed = parseClientHello(hello) ?: throw AssertionError("ClientHello не разобран")
+        val ext = parsed.extensionTypes
+
+        assertTrue(
+            "hello без key_share (0x0033) при TLS 1.3 дропается фильтром молча",
+            0x0033 in ext
+        )
+        assertTrue("обязателен psk_key_exchange_modes (0x002D)", 0x002D in ext)
+        assertTrue("обязателен session_ticket (0x0023)", 0x0023 in ext)
+        assertTrue("обязателен extended_master_secret (0x0017)", 0x0017 in ext)
+        assertTrue("обязателен ALPN (0x0010)", 0x0010 in ext)
+        assertTrue("обязателен server_name (0x0000)", 0x0000 in ext)
+
+        // random обязан быть «живым»: все нули или один повторяющийся байт —
+        // верный признак синтетики для отпечатков (JA3).
+        val random = parsed.random
+        assertTrue("random не должен быть однородным", random.toSet().size > 8)
+    }
+
     /* ================================================================== */
     /*  2. Виртуальные адреса DNS нельзя сравнивать по строке                */
     /* ================================================================== */
@@ -234,7 +268,9 @@ class RegressionsTest {
     private class ParsedHello(
         val legacyVersion: Int,
         val cipherSuites: List<Int>,
-        val supportedVersions: List<Int>
+        val supportedVersions: List<Int>,
+        val extensionTypes: Set<Int> = emptySet(),
+        val random: ByteArray = ByteArray(0)
     )
 
     /** Разбор ClientHello ровно так, как это сделал бы сервер. */
@@ -245,6 +281,7 @@ class RegressionsTest {
         if ((b[p].toInt() and 0xFF) != 1) return null          // client_hello
         p += 4
         val legacyVersion = getU16(b, p); p += 2
+        val random = b.copyOfRange(p, p + 32)
         p += 32                                                // random
         p += 1 + (b[p].toInt() and 0xFF)                        // session id
         val csLen = getU16(b, p); p += 2
@@ -254,11 +291,13 @@ class RegressionsTest {
         val extTotal = getU16(b, p); p += 2
         val extEnd = p + extTotal
         var versions: List<Int> = emptyList()
+        val extTypes = LinkedHashSet<Int>()
         while (p + 4 <= extEnd && p + 4 <= b.size) {
             val type = getU16(b, p)
             val len = getU16(b, p + 2)
             p += 4
             if (p + len > b.size) break
+            extTypes += type
             if (type == 0x002B && len >= 1) {
                 // RFC 8446: длина списка — ОДИН байт, затем версии по 2 байта.
                 // (Раньше ветка не исполнялась — расширения не было, и u16
@@ -270,7 +309,7 @@ class RegressionsTest {
             }
             p += len
         }
-        return ParsedHello(legacyVersion, suites, versions)
+        return ParsedHello(legacyVersion, suites, versions, extTypes, random)
     }
 
     private companion object {

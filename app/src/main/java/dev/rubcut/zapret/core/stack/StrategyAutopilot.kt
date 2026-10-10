@@ -289,6 +289,17 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     b.write(ib)
                     b.toByteArray()
                 }
+                // extended_master_secret: обязателен у всех современных клиентов
+                writeExt(ext, 0x0017) { ByteArray(0) }
+                // renegotiation_info: пустой — как у Chrome
+                writeExt(ext, 0xFF01) { byteArrayOf(0) }
+                // session_ticket: пустое расширение, без него hello выглядит
+                // небраузерным (его шлют 100% клиентов)
+                writeExt(ext, 0x0023) { ByteArray(0) }
+                // ALPS (application_settings): присутствует у Chrome 120+
+                writeExt(ext, 0x446A) { byteArrayOf(0) }
+                // status_request: пустое, как у браузеров
+                writeExt(ext, 0x0005) { byteArrayOf(1, 0) }
                 // supported_versions: TLS 1.3 + 1.2. Шифры только из 1.2,
                 // поэтому сервер выберет 1.2 — противоречия нет, а отпечаток
                 // как у браузера.
@@ -299,22 +310,44 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     putU16Buf(b, 0x0303)
                     b.toByteArray()
                 }
-                // GREASE: «мусорное» расширение нулевой длины, как у Chrome.
+                // key_share: X25519 с 32-байтным публичным ключом. Без него
+                // hello, объявляющего TLS 1.3, выглядит синтетикой — многие
+                // фильтры (JA3/эвристика) дропают такие молча, без alert.
+                // Зонды получают «тишину после SYN-ACK» и не находят победителя.
+                writeExt(ext, 0x0033) {
+                    val b = ByteArrayOutputStream()
+                    putU16Buf(b, 2 + 2 + 32)                               // длина списка
+                    putU16Buf(b, 0x001D)                                   // X25519
+                    putU16Buf(b, 32)                                       // длина ключа
+                    b.write(ByteArray(32) { (it * 7 + 13).toByte() })       // публичный ключ
+                    b.toByteArray()
+                }
+                // psk_key_exchange_modes: обязателен при TLS 1.3
+                writeExt(ext, 0x002D) { byteArrayOf(1, 1) }
+                // GREASE: «мусорное» расширение, как у Chrome
                 writeExt(ext, 0x0A0A) { ByteArray(0) }
 
                 val body = ByteArrayOutputStream()
                 body.write(3); body.write(3)                                // legacy_version = TLS 1.2
-                body.write(ByteArray(32) { 7 })                             // random
+                // random: 32 байта псевдослучайных — все нули или все 0x07
+                // выдают синтетический hello с одного взгляда на JA3.
+                body.write(ByteArray(32) { (it * 31 + 17).toByte() })
                 body.write(0)                                               // session id
+                // Порядок шифров как у Chrome: сначала TLS 1.3, потом ECDHE.
                 val suites = intArrayOf(
-                    0xC02F, // ECDHE_RSA_AES128_GCM_SHA256
-                    0xC030, // ECDHE_RSA_AES256_GCM_SHA384
-                    0xC02B, // ECDHE_ECDSA_AES128_GCM_SHA256
-                    0xC02C, // ECDHE_ECDSA_AES256_GCM_SHA384
-                    0x009C, // RSA_AES128_GCM_SHA256
-                    0x009D, // RSA_AES256_GCM_SHA384
-                    0x002F, // RSA_AES128_CBC_SHA
-                    0x0035  // RSA_AES256_CBC_SHA
+                    0x1301, // TLS_AES_128_GCM_SHA256
+                    0x1302, // TLS_AES_256_GCM_SHA384
+                    0x1303, // TLS_CHACHA20_POLY1305_SHA256
+                    0xC02B, // ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+                    0xC02F, // ECDHE_RSA_WITH_AES_128_GCM_SHA256
+                    0xCCA8, // ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+                    0xC02C, // ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+                    0xC030, // ECDHE_RSA_WITH_AES_256_GCM_SHA384
+                    0xCCA9, // ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+                    0x009C, // RSA_AES_128_GCM_SHA256
+                    0x009D, // RSA_AES_256_GCM_SHA384
+                    0x002F, // RSA_AES_128_CBC_SHA
+                    0x0035  // RSA_AES_256_CBC_SHA
                 )
                 putU16Buf(body, suites.size * 2)
                 for (s in suites) putU16Buf(body, s)
@@ -482,6 +515,13 @@ class StrategyAutopilot(private val stack: TcpStack) {
 
         /** Таймаут зонда. */
         TIMEOUT,
+
+        /**
+         * Соединение разорвано RST — до сервера дело не дошло: либо upstream
+         * не открылся, либо сброс пришёл по дороге. Отличать от [SILENCE]
+         * обязательно: там виноваты приёмы, здесь — сеть.
+         */
+        RESET,
     }
 
     /**
@@ -534,17 +574,27 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 )
             )
 
-            // Внутренний таймаут приёма ОБЯЗАН быть короче внешнего: при глухом
-            // фильтре (SYN-ACK есть, ответа нет) иначе первым срабатывает
-            // внешний withTimeoutOrNull, и зонд умирает молча — строка
-            // диагностики ниже недостижима в принципе. Именно так пропали все
-            // строки зонда из журналов: каждый кандидат упирался в стену 6 с.
-            // Запас 2 с — на установку соединения и отправку hello.
-            val down = receive(captured, (timeoutMs - 2000).coerceAtLeast(2000)) { p ->
-                val ip = parseIp(p, p.size) ?: return@receive false
-                val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return@receive false
-                seg.dstPort == clientPort && !seg.isSynAck && seg.payloadLength > 0
-            } ?: run {
+            // Один приём ловит СРАЗУ и данные, и RST. Два последовательных receive были бы
+            // ошибкой: каждый ждёт свой таймаут, и внешний withTimeoutOrNull
+            // срабатывал бы раньше второго — вердикт SILENCE просто терялся бы.
+            // Именно так выглядел дефект, из-за которого строки зонда пропали.
+            //
+            // RST различаем отдельно: если upstream-сокет не открылся (connect()
+            // не успел за connectTimeoutMs), наш стек шлёт клиенту RST, и по
+            // данным это неотличимо от «тишины после SYN-ACK». Причины разные:
+            // тишина — вопрос к приёмам, RST — к сети и таймаутам.
+            val reply = receivePair(captured, (timeoutMs - 2000).coerceAtLeast(2000), clientPort)
+
+            if (reply is ProbeReply.RESET) {
+                LogManager.d(
+                    LogTag.DPI,
+                    "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → RST: соединение разорвано (upstream не открылся)"
+                )
+                result = Verdict.RESET
+                return@withTimeoutOrNull result
+            }
+            val down = (reply as? ProbeReply.DATA)?.packet
+            if (down == null) {
                 // SYN-ACK был, а ответа на ClientHello нет — вот это уже
                 // почерк DPI: рукопожатие дошло до сервера, дальше тишина.
                 LogManager.d(LogTag.DPI, "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → SYN-ACK есть, ответа на ClientHello нет")
@@ -636,6 +686,7 @@ private fun describeVerdict(v: Verdict): String = when (v) {
     Verdict.ALERT -> "alert 0x15"
     Verdict.GARBAGE -> "не TLS"
     Verdict.SILENCE -> "тишина после SYN-ACK"
+    Verdict.RESET -> "соединение сброшено (RST)"
     Verdict.NO_SYNACK -> "нет SYN-ACK"
     Verdict.TIMEOUT -> "таймаут"
 }
@@ -676,6 +727,37 @@ private fun describeVerdict(v: Verdict): String = when (v) {
             @Suppress("UNREACHABLE_CODE")
             null
         }
+
+    /** Что пришло в ответ на ClientHello: данные с полезной нагрузкой, RST или ничего. */
+    private sealed interface ProbeReply {
+        class DATA(val packet: ByteArray) : ProbeReply
+        object RESET : ProbeReply
+        object NONE : ProbeReply
+    }
+
+    /**
+     * Единый приём ответа: первое, что подошло — данные или RST.
+     *
+     * Разделено на два вызова `receive` — намеренно: см. комментарий у места
+     * вызова. Второй ожидающий вызов никогда не наступил бы, потому что внешний
+     * таймаут срабатывает раньше, и вердикт «тишина» терялся бы.
+     */
+    private suspend fun receivePair(
+        ch: Channel<ByteArray>,
+        timeoutMs: Long,
+        clientPort: Int
+    ): ProbeReply {
+        val packet = receive(ch, timeoutMs) { p ->
+            val ip = parseIp(p, p.size) ?: return@receive false
+            val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return@receive false
+            if (seg.dstPort != clientPort || seg.isSynAck) return@receive false
+            // Любой из этих двух — ответ, и какой именно важен для вердикта.
+            seg.isRst || seg.payloadLength > 0
+        } ?: return ProbeReply.NONE
+        val ip = parseIp(packet, packet.size) ?: return ProbeReply.NONE
+        val seg = parseTcp(packet, ip.payloadOffset, ip.payloadLength) ?: return ProbeReply.NONE
+        return if (seg.isRst) ProbeReply.RESET else ProbeReply.DATA(packet)
+    }
 
     private fun feed(packet: ByteArray) {
         val ip = parseIp(packet, packet.size) ?: return

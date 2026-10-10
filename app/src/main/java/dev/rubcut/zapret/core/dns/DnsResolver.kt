@@ -126,6 +126,20 @@ class DnsResolver(
     private var secureBypassUntil = 0L
 
     /**
+     * Держать резервные серверы, пока `secureDnsFailures >= 3`.
+     *
+     * Ставится самоисцелением из VPN-сервиса. Смысл: не выкидывать настройку
+     * пользователя в SYSTEM (там DNS провайдера отдаёт подменённые адреса),
+     * а временно ходить резервом, оставив DoH/DoT выбранным в UI.
+     */
+    @Volatile
+    var forceFallbackServers: Boolean = false
+        set(value) {
+            field = value
+            if (value) secureBypassUntil = Long.MAX_VALUE else secureBypassUntil = 0L
+        }
+
+    /**
      * @return пара «результат» и «ответ пришёл с резервного (непроверенного)
      *   пути». Резерв — это системный UDP после аварии DoH/DoT: ответ там
      *   может подменить провайдер, поэтому вызывающий кэширует его недолго.

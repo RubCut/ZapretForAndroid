@@ -830,14 +830,18 @@ class ZapretVpnService : VpnService() {
             // таймаут, и для пользователя это выглядит как полный отказ сети.
             val resolver = dnsHandler?.resolver
             val cfgNow = AppGraph.config.current
+            // Откат делается ИМЕННО в резерв, а не в SYSTEM. Системный DNS на
+            // российских провайдерах отдаёт подменённые адреса (example.com
+            // приходил как 8.47.69.1), и такой режим, однажды записавшись,
+            // оставался навсегда — резолвить всё через мусор.
             if (resolver != null && resolver.secureDnsFailures >= 3 &&
                 (cfgNow.dnsMode == DnsMode.DOH || cfgNow.dnsMode == DnsMode.DOT)
             ) {
                 LogManager.w(
                     "Самопроверка: ${cfgNow.dnsMode} не ответил ${resolver.secureDnsFailures} раз — " +
-                        "переключаю DNS в системный режим"
+                        "перехожу на резервные серверы, сам ${cfgNow.dnsMode} оставляю выбранным"
                 )
-                runCatching { AppGraph.config.update { it.copy(dnsMode = DnsMode.SYSTEM) } }
+                resolver.forceFallbackServers = true
             }
             if (read <= 0) return@launch
             if (ok > 0) {

@@ -348,6 +348,50 @@ object Tls {
         return out.toByteArray()
     }
 
+    /**
+     * Переупаковка записи по алгоритму ZapretYT (`--tlsrec=ПОЗ`).
+     *
+     * Отличие от [repackRecordAt] и [repackRecords] принципиальное. Их код
+     * (декомпиляция `AbstractC0148g.a()`) делает так:
+     *
+     *   1. Рез режет ТЕЛО записи в точке `cut`, считая её от начала тела.
+     *   2. В исходный буфер вставляется новый заголовок записи ПЕРЕД второй
+     *      частью — тело сдвигается вправо на 5 байт, а не пересобирается
+     *      в новый массив. Заголовок копируется из первых трёх байт записи
+     *      (тип + версия), длины переписываются: первая = cut, вторая = остаток.
+     *   3. Длина результата — `((parts + 1) * 5) + len`.
+     *
+     * Именно поэтому у них «переупаковка» и «разрез потока» — две независимые
+     * операции со своими координатами, а не одна, наложенная на другую.
+     *
+     * @param cut смещение внутри тела записи (не абсолютное).
+     */
+    fun repackRecordInPlace(b: ByteArray, off: Int, len: Int, cut: Int): ByteArray? {
+        if (!isRecordType(b, off, len)) return null
+        val recLen = getU16(b, off + 3)
+        val bodyOff = off + RECORD_HEADER
+        if (bodyOff + recLen > b.size || bodyOff + recLen > off + len) return null
+        if (cut <= 0 || cut >= recLen) return null
+
+        val out = ByteArrayOutputStream(recLen + 2 * RECORD_HEADER + (off + len - bodyOff - recLen))
+        // Первая часть: исходный заголовок с новой длиной тела = cut.
+        // Первая часть: исходный заголовок (тип + версия) с новой длиной тела.
+        // Заголовок обязателен целиком: без типа и версии запись невалидна, а
+        // тело короче ровно на 3 байта — это ловится сравнением с их алгоритмом.
+        out.write(b, off, 3)
+        putU16Buf(out, cut)
+        out.write(b, bodyOff, cut)
+        // Вставленный заголовок: тип и версия копируются из первой записи.
+        out.write(b[off]); out.write(b[off + 1]); out.write(b[off + 2])
+        putU16Buf(out, recLen - cut)
+        out.write(b, bodyOff + cut, recLen - cut)
+        // Хвост буфера (следующие записи) копируется без изменений.
+        val tailStart = bodyOff + recLen
+        val tailEnd = off + len
+        if (tailStart < tailEnd) out.write(b, tailStart, tailEnd - tailStart)
+        return out.toByteArray()
+    }
+
     /** Границы всех TLS-записей в буфере. */
     fun recordBoundaries(b: ByteArray, off: Int, len: Int): List<Int> {
         val out = ArrayList<Int>()

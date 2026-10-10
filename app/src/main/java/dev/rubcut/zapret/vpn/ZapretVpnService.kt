@@ -322,7 +322,7 @@ class ZapretVpnService : VpnService() {
         }
     }
 
-    private suspend fun startVpn() {
+    private fun startVpn() {
         if (running) {
             updateNotification()
             return

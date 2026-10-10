@@ -69,15 +69,23 @@ class AutopilotCandidatesTest {
         // Варианты со сменой регистра проверяются отдельно: они описывают другой
         // приём и обходятся собственным тестом, здесь важна только их роль
         // разбивающих кандидатов без смены регистра.
+        //
+        // Первым разбивающим идёт tlsrec + середина домена (0+wm): именно эта
+        // комбинация победила на реальном фильтре, поэтому она проверяется
+        // раньше всех остальных активных кандидатов.
         val firstSplit = StrategyAutopilot.CANDIDATES
             .first {
                 it.second.desync != dev.rubcut.zapret.data.DesyncMode.NONE &&
                     !it.second.sniCaseMix
             }
-        val positions = firstSplit.second.splitPositions
+        val strategy = firstSplit.second
+        assertEquals(
+            "первым разбивающим должен идти tlsrec-вариант, а идёт ${firstSplit.first}",
+            dev.rubcut.zapret.data.DesyncMode.MULTISPLIT_TLSREC, strategy.desync
+        )
         assertTrue(
-            "первый разбивающий кандидат должен содержать обе точки (FIRST и MIDSNI), а содержит $positions",
-            positions.contains(SplitPos.FIRST) && positions.contains(SplitPos.MIDSNI)
+            "точка реза первого кандидата — середина домена (0+wm), а не первый байт: ${strategy.splitPositions}",
+            strategy.splitPositions.contains(SplitPos.MIDSNI)
         )
     }
 

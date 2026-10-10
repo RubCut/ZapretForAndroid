@@ -297,6 +297,54 @@ object Tls {
         return out.toByteArray()
     }
 
+    /**
+     * Переупаковка одной записи в две ровно по смещению [at].
+     *
+     * Отличие от [repackRecords] принципиальное: там тело делится пополам, а
+     * здесь запись режется в заданной точке. Именно второй вариант и есть
+     * `--tlsrec=ПОЗ` в ByeByeDPI, который на реальном фильтре и победил:
+     *
+     *   ПОЗ = смещение[+флаги]
+     *     3+s   — от начала имени сервера
+     *     0+sm  — середина имени
+     *     0+se  — конец имени
+     *     0+wm  — середина слова googlevideo/youtube
+     *
+     * То есть `tlsrec=0+wm` кладёт границу записей в середину домена второго
+     * уровня. Деление пополам ставит её совсем в другое место, и обход не
+     * срабатывает, хотя техника называется так же.
+     *
+     * @param at абсолютное смещение в [b], внутри тела записи.
+     */
+    fun repackRecordAt(b: ByteArray, off: Int, len: Int, at: Int): ByteArray? {
+        if (!isRecordType(b, off, len)) return null
+        val contentType = getU8(b, off)
+        val verHi = getU8(b, off + 1)
+        val verLo = getU8(b, off + 2)
+        val recLen = getU16(b, off + 3)
+        val bodyOff = off + RECORD_HEADER
+        if (bodyOff + recLen > b.size || bodyOff + recLen > off + len) return null
+        val first = at - off
+        if (first <= 0 || first >= recLen) return null
+
+        val tailStart = bodyOff + recLen
+        val tailEnd = off + len
+        val out = ByteArrayOutputStream(recLen + 2 * RECORD_HEADER + (tailEnd - tailStart))
+        var cursor = bodyOff
+        for (n in intArrayOf(first, recLen - first)) {
+            val header = ByteArray(RECORD_HEADER)
+            header[0] = contentType.toByte()
+            header[1] = verHi.toByte()
+            header[2] = verLo.toByte()
+            putU16(header, 3, n)
+            out.write(header)
+            out.write(b, cursor, n)
+            cursor += n
+        }
+        if (tailStart < tailEnd) out.write(b, tailStart, tailEnd - tailStart)
+        return out.toByteArray()
+    }
+
     /** Границы всех TLS-записей в буфере. */
     fun recordBoundaries(b: ByteArray, off: Int, len: Int): List<Int> {
         val out = ArrayList<Int>()

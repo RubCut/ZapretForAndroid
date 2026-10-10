@@ -117,16 +117,23 @@ class DesyncEngine {
         val wantsTlsRec = s.desync == DesyncMode.TLSREC || s.desync == DesyncMode.MULTISPLIT_TLSREC
         val parts = if (s.tlsrecParts >= 2) s.tlsrecParts else 2
         if (isTls && wantsTlsRec) {
-            val repacked = Tls.repackRecords(data, 0, data.size, parts)
+            // Точка реза берётся из настроек, если она попадает внутрь записи.
+            //
+            // Победивший на реальном фильтре вариант — `--tlsrec=0+wm
+            // --split=0+wm`: запись режется в середине домена второго уровня, и
+            // там же рвётся поток. Раньше запись делилась пополам, то есть граница
+            // уезжала совсем в другое место и приём не срабатывал.
+            val cutAt = collectPositions(s, data, hello, null)
+                .firstOrNull { it in (RECORD_HEADER + 1) until data.size }
+            val repacked = cutAt?.let { Tls.repackRecordAt(data, 0, data.size, it) }
+                ?: Tls.repackRecords(data, 0, data.size, parts)
             if (repacked != null) {
                 // Границы записей И точки разбиения из настроек — вместе.
                 //
                 // Раньше здесь брались только границы переупакованных записей, и
                 // ветка возвращалась раньше общего кода: половина названия
                 // MULTISPLIT_TLSREC не работала, точки из splitPositions
-                // игнорировались. На практике это ломало стратегию
-                // «TLS-записи + разбиение», которая на реальном фильтре и
-                // оказалась единственной рабочей.
+                // игнорировались.
                 //
                 // SNI разбирается заново: после переупаковки он сдвинут на
                 // длину добавленной записи, старые смещения больше не годятся.

@@ -60,9 +60,9 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // быстрый вариант, и с наибольшей пропускной способностью, и он
             // не опирается на намеренно некорректные handshake-ы, на которых
             // фильтры учатся учиться. Варианты ByeDPI в РФ сейчас отмирают.
-            "multisplit · tlsrec + первый байт + середина домена" to Strategy(
+            "multisplit · tlsrec + середина домена (0+wm)" to Strategy(
                 desync = DesyncMode.MULTISPLIT_TLSREC,
-                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitPositions = listOf(SplitPos.MIDSNI),
                 splitDelayMs = 2,
                 tlsrecParts = 2
             ),

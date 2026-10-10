@@ -150,6 +150,7 @@ object Presets {
             name = "YouTube / Google · TLS",
             tcpPorts = TLS_PORTS,
             hostSource = GOOGLE,
+            strategy = Strategy(
                 // Решение принято по журналу стороннего приложения (ZapretYT 1.0.7),
                 // которое обходит YouTube на этом же провайдере. Там перебирались
                 // 77 стратегий, и победила устойчиво на всех прогонах —
@@ -166,7 +167,11 @@ object Presets {
                 // Смена регистра не выкинута: она осталась кандидатом автоподбора,
                 // потому что на других сетях она единственная рабочая.
                 desync = MULTISPLIT_TLSREC,
-                splitPositions = listOf(FIRST),
+                // MIDSNI, а не FIRST: в ByeByeDPI это 0+wm — середина слова
+                // googlevideo/youtube. Разрыв по первому байту в победившей
+                // стратегии отсутствует, и по их же замерам вариант
+                // «TLS-записи + разбиение по первому байту» проверки не прошёл.
+                splitPositions = listOf(MIDSNI),
                 splitDelayMs = 2,
                 tlsrecParts = 2,
                 sniCaseMix = false

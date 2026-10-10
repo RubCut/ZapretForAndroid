@@ -9,6 +9,7 @@ import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -141,7 +142,48 @@ class TlsrecWithSplitTest {
         )
     }
 
-    /** Точка вне тела записи — не повод резать наугад. */
+    /**
+ * `repackRecordInPlace` обязан совпадать с алгоритмом ZapretYT побайтово.
+ *
+ * Эталон — их декомпилированный код (`AbstractC0148g.a()`): тело разрывается
+ * в точке `cut`, после чего перед второй частью ВСТАВЛЯЕТСЯ заголовок записи —
+ * тип и версия копируются из первой, длины переписываются. Метод отличается от
+ * [Tls.repackRecordAt] только формой, результат обязан быть тот же.
+ *
+ * Проверка важна потому, что вариант с потерянными байтами заголовка
+ * компилируется и работает, но тихо укорачивает первую запись на 3 байта —
+ * это ловится только сравнением с эталоном.
+ */
+@Test
+fun repackRecordInPlaceMatchesReferenceAlgorithm() {
+    val hello = StrategyAutopilotHelloFactory.build("www.youtube.com")
+    val recLen = Tls.recordTotalLength(hello, 0, hello.size)
+    val cut = (recLen - Tls.RECORD_HEADER) / 3
+
+    val actual = Tls.repackRecordInPlace(hello, 0, hello.size, cut)
+    assertNotNull("переупаковка обязана сработать", actual)
+    val repacked = actual ?: error("переупаковка не сработала")
+
+    // Эталон: вставка заголовка внутрь исходного буфера со сдвигом тела.
+    val buf = hello.copyOf()
+    val rest = recLen - cut
+    System.arraycopy(buf, Tls.RECORD_HEADER + cut, buf, Tls.RECORD_HEADER + cut + 5, rest)
+    System.arraycopy(buf, 0, buf, Tls.RECORD_HEADER + cut, 3)
+    buf[3] = (cut shr 8).toByte(); buf[4] = cut.toByte()
+    buf[Tls.RECORD_HEADER + cut + 3] = (rest shr 8).toByte()
+    buf[Tls.RECORD_HEADER + cut + 4] = rest.toByte()
+
+    assertArrayEquals(
+        "переупаковка обязана совпасть с эталоном ZapretYT",
+        buf, repacked
+    )
+    assertEquals(
+        "записей ровно две, каждая с заголовком",
+        2, Tls.recordBoundaries(repacked, 0, repacked.size).size
+    )
+}
+
+/** Точка вне тела записи — не повод резать наугад. */
     @Test
     fun repackRecordAtRejectsOffsetsOutsideBody() {
         val hello = StrategyAutopilotHelloFactory.build("www.youtube.com")

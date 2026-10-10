@@ -319,6 +319,15 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 LogManager.w("DPI: автоподбор: $host не разрешился")
                 continue
             }
+            // Разведка идёт ДО перебора кандидатов: без неё вердикт «не
+            // подошёл ни один» невозможно читать. Если адрес отвечает с чужим
+            // SNI, фильтр смотрит на содержимое и приёмы байтов бесполезны;
+            // если не отвечает ни с тем — фильтр по адресу, и чинить тут нечего.
+            val recon = probeRecon(addr, host)
+            if (recon != null) {
+                LogManager.i(LogTag.DPI, "Разведка $host → ${recon.first} · ${recon.second}")
+                onProgress("$host: разведка → ${recon.first}")
+            }
             for ((index, candidate) in CANDIDATES.withIndex()) {
                 val (name, strategy) = candidate
                 onProgress("$host · ${index + 1}/$total · $name")
@@ -466,7 +475,56 @@ class StrategyAutopilot(private val stack: TcpStack) {
         result
     } ?: Verdict.TIMEOUT
 
-    /** Прежний интерфейс: удалось ли получить ServerHello. Разбор ответа —
+    /**
+ * Разведка: отвечает ли тот же адрес с ЧУЖИМ именем в SNI.
+ *
+ * Ответ разводит две принципиально разные причины блокировки, которые до сих
+ * пор выглядели одинаково — как «молчание после SYN-ACK»:
+ *
+ *   • SNI нормальный → молчит, SNI чужой → ServerHello.
+ *     Фильтр разбирает содержимое и склеивает наши сегменты. Приёмы, которые
+ *     прячут имя от разбор�� (смена регистра, подставная запись, разрыв потока)
+ *     осмысленны; чинить тут точку реза не нужно.
+ *
+ *   • молчит в обоих случаях — фильтр по адресу или сама сеть.
+ *     Тогда ни один приём на уровне байтов не поможет в принципе, и искать
+ *     нечего: вопрос уходит в маршрут, MTU и настройки провайдера.
+ *
+ * Обе проверки идут прозрачной стратегией, чтобы результат отражал именно
+ * фильтр, а не выбранную технику.
+ *
+ * @return пара «вердикт для своего SNI» и «вердикт для чужого SNI».
+ */
+private suspend fun probeRecon(
+    addr: InetAddress,
+    host: String,
+    benign: String = "www.google.com"
+): Pair<Verdict, Verdict>? {
+    val passive = dev.rubcut.zapret.data.Strategy(desync = dev.rubcut.zapret.data.DesyncMode.NONE)
+    val own = probeVerdict(addr, 443, host, passive, 6000)
+    val other = probeVerdict(addr, 443, benign, passive, 6000)
+    val ownText = describeVerdict(own)
+    val otherText = describeVerdict(other)
+    val conclusion = when {
+        own == Verdict.HELLO -> "SNI $host проходит — блокировки нет"
+        other == Verdict.HELLO && own != Verdict.HELLO ->
+            "фильтр по содержимому: чужой SNI на этом же адресе отвечает"
+        other == Verdict.HELLO -> "свой SNI не проходит, чужой отвечает — фильтр по содержимому"
+        else -> "адрес молчит на любом SNI — похоже на блокировку по адресу или сети"
+    }
+    return "$ownText, чужой SNI → $otherText ($conclusion)" to ownText
+}
+
+private fun describeVerdict(v: Verdict): String = when (v) {
+    Verdict.HELLO -> "ответ 0x16"
+    Verdict.ALERT -> "alert 0x15"
+    Verdict.GARBAGE -> "не TLS"
+    Verdict.SILENCE -> "тишина после SYN-ACK"
+    Verdict.NO_SYNACK -> "нет SYN-ACK"
+    Verdict.TIMEOUT -> "таймаут"
+}
+
+/** Прежний интерфейс: удалось ли получить ServerHello. Разбор ответа —
      *  в [probeVerdict]. */
     suspend fun probe(
         addr: InetAddress,

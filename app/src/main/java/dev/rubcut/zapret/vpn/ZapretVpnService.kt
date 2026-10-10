@@ -322,8 +322,14 @@ class ZapretVpnService : VpnService() {
         for (net in nets) {
             val addr: String = net.first
             val prefix: Int = net.second
-            runCatching { builder.addExcludedRoute(addr, prefix) }
-                .onFailure { LogManager.w("Не удалось исключить локальную сеть $addr/$prefix: ${it.message}") }
+            // Именно try/catch, а не runCatching: у runCatching тип результата
+            // выводится из лямбды, и на void-вызове компилятор эту сборку
+            // спотыкается «Cannot infer type for this parameter».
+            try {
+                builder.addExcludedRoute(addr, prefix)
+            } catch (e: Exception) {
+                LogManager.w("Не удалось исключить локальную сеть $addr/$prefix: ${e.message}")
+            }
         }
     }
 

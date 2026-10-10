@@ -94,7 +94,18 @@ jobs:
             echo
             echo "Сборка: \`$GITHUB_SHA\`"
           } > "$notes"
-          gh release create "$TAG" "zapret-$TAG.apk" \
-            --title "Zapret $TAG" \
-            --notes-file "$notes" \
-            --generate-notes
+          # Пересоздание тега приводило к падению всего шага: релиз с таким
+          # тегом уже существовал, `gh release create` отказывался, и
+          # публикация обрывалась. Теперь существующий релиз обновляется,
+          # а существующий файл заменяется — повторный прогон идемпотентен.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Релиз $TAG уже существует — обновляем его"
+            gh release upload "$TAG" "zapret-$TAG.apk" --clobber
+            gh release edit "$TAG" --title "Zapret $TAG" --notes-file "$notes"
+          else
+            gh release create "$TAG" "zapret-$TAG.apk" \
+              --title "Zapret $TAG" \
+              --notes-file "$notes" \
+              --generate-notes
+          fi
+          echo "::notice title=Релиз::$TAG опубликован: $(gh release view "$TAG" --json url -q .url)"

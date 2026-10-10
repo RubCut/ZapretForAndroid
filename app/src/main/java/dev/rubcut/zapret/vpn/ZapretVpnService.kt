@@ -311,6 +311,10 @@ class ZapretVpnService : VpnService() {
      * бы ломать собственный стек приложения.
      */
     private fun applyLanExclusions(builder: VpnService.Builder) {
+        // addExcludedRoute существует только с API 33, а minSdk у нас 24.
+        // Без гарда на старых устройствах будет NoSuchMethodError, который
+        // не ловится через catch (Exception), — только смерть процесса.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         // Типы заданы явно, без деструктуризации: иначе при любой проблеме с
         // вызовом самого API компилятор сыплет каскадом «Cannot infer type»,
         // и настоящая причина теряется в шуме.

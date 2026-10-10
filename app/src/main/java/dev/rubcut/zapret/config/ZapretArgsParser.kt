@@ -48,6 +48,8 @@ class ParseResult(
         poisonEnabled = poisonEnabled ?: defaultStrategy?.poisonEnabled ?: base.poisonEnabled,
         poisonSni = defaultStrategy?.poisonSni?.takeIf { it.isNotBlank() } ?: base.poisonSni,
         poisonDelayMs = defaultStrategy?.poisonDelayMs ?: base.poisonDelayMs,
+        urgentByte = defaultStrategy?.urgentByte ?: base.urgentByte,
+        fakeTtl = defaultStrategy?.fakeTtl ?: base.fakeTtl,
         cutoffChunks = cutoffChunks ?: base.cutoffChunks
     )
 }
@@ -132,6 +134,8 @@ object ZapretArgsParser {
         var curPoison = base.poisonEnabled
         var curPoisonSni = base.poisonSni
         var curPoisonDelay = base.poisonDelayMs
+        var curUrgentByte: Int? = base.urgentByte
+        var curFakeTtl = base.fakeTtl
         var ruleName = ""
 
         fun flush() {
@@ -149,7 +153,9 @@ object ZapretArgsParser {
                 sniCaseMix = curCaseMix,
                 poisonEnabled = curPoison,
                 poisonSni = curPoisonSni,
-                poisonDelayMs = curPoisonDelay
+                poisonDelayMs = curPoisonDelay,
+                urgentByte = curUrgentByte,
+                fakeTtl = curFakeTtl
             )
             rules += StrategyRule(
                 name = ruleName.ifBlank { defaultRuleName(curTcp, curUdp, curDesync) },
@@ -226,6 +232,20 @@ object ZapretArgsParser {
                     anyProtocol = curAnyProto
                     supported += "--dpi-desync-any-protocol"
                 }
+                k == "--dpi-desync-oob" -> {
+                    val n = value?.trim()?.toIntOrNull() ?: 0
+                    curUrgentByte = n and 0xFF
+                    if (curDesync == DesyncMode.NONE) curDesync = DesyncMode.OOB
+                    supported += "--dpi-desync-oob=$curUrgentByte"
+                }
+                k == "--dpi-desync-fake-ttl" -> {
+                    val n = value?.trim()?.toIntOrNull()
+                    if (n != null && n > 0) {
+                        curFakeTtl = n.coerceIn(1, 30)
+                        if (curDesync == DesyncMode.NONE) curDesync = DesyncMode.FAKE
+                        supported += "--dpi-desync-fake-ttl=$curFakeTtl"
+                    } else errors += "не разобрал --dpi-desync-fake-ttl=$value"
+                }
                 k == "--hostcase" -> {
                     curCaseMix = true
                     sniCaseMix = true
@@ -276,6 +296,8 @@ object ZapretArgsParser {
                 }
                 k == "--rule-name" -> ruleName = value.orEmpty()
 
+                // --dpi-desync-fake-ttl разобран выше точным совпадением; сюда
+                // попадают только неподдерживаемые fake-подключи (fake-tls и т.п.).
                 k.startsWith("--dpi-desync-fake") ||
                     k.startsWith("--dpi-desync-split-seqovl") ||
                     k == "--dpi-desync-fooling" ||
@@ -343,6 +365,8 @@ object ZapretArgsParser {
                 "split", "split2", "fakedsplit" -> if (mode == null || mode == DesyncMode.NONE) mode = DesyncMode.SPLIT
                 "multisplit" -> mode = DesyncMode.MULTISPLIT
                 "tlsrec" -> tlsrec = true
+                "oob" -> mode = DesyncMode.OOB
+                "fake" -> mode = DesyncMode.FAKE
                 "hostfakesplit" -> mode = DesyncMode.HOSTFAKESPLIT
                 "none", "off" -> mode = DesyncMode.NONE
                 else -> {

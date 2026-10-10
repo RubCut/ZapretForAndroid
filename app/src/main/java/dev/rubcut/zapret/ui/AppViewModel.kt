@@ -37,6 +37,7 @@ import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.vpn.VpnController
 import dev.rubcut.zapret.vpn.VpnState
 import dev.rubcut.zapret.vpn.ZapretVpnService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -338,7 +339,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             sniCaseMix = winner.sniCaseMix,
                             poisonEnabled = winner.poisonEnabled,
                             poisonSni = winner.poisonSni,
-                            poisonDelayMs = winner.poisonDelayMs
+                            poisonDelayMs = winner.poisonDelayMs,
+                            urgentByte = winner.urgentByte,
+                            fakeTtl = winner.fakeTtl
                         ).withTunedPerHost(perHost, current.tcpPorts)
                     }
                     autopilotResult.value = app.getString(
@@ -346,6 +349,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         perHost.values.first().first
                     )
                 }
+            } catch (e: CancellationException) {
+                // Отмена скоупа — не провал подбора: исключение обязано идти
+                // дальше, иначе гасится сигнал отмены корутин.
+                throw e
             } catch (e: Exception) {
                 LogManager.w("Автоподбор не завершился: ${e.message}")
                 autopilotResult.value = app.getString(R.string.autopilot_fail)

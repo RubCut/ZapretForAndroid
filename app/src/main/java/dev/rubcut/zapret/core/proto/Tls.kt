@@ -56,6 +56,7 @@ object Tls {
     /** Размер записи целиком; -1 если данных пока меньше заголовка. */
     fun recordTotalLength(b: ByteArray, off: Int, len: Int): Int {
         if (len < RECORD_HEADER) return -1
+        if (off < 0 || off + RECORD_HEADER > b.size || off + len > b.size) return -1
         return RECORD_HEADER + getU16(b, off + 3)
     }
 
@@ -235,17 +236,20 @@ object Tls {
             val type = getU16(b, p)
             val elen = getU16(b, p + 2)
             p += 4
-            if (elen < 0 || p + elen > extEnd) break
+            if (p + elen > extEnd) break
             if (type == 0x0000) {
                 var q = p
-                if (q + 2 > end) break
+                // Границы считаются от конца РАСШИРЕНИЯ, а не записи: длина
+                // списка врёт чаще всего, и чтение за ним склеивает чужое
+                // расширение как SNI (на практике было «googl????»).
+                if (q + 2 > p + elen) break
                 val listLen = getU16(b, q); q += 2
-                val listEnd = minOf(q + listLen, end)
+                val listEnd = minOf(q + listLen, p + elen)
                 var g2 = 0
                 while (q + 3 <= listEnd && g2++ < 16) {
                     val nameType = getU8(b, q); q++
                     val nameLen = getU16(b, q); q += 2
-                    if (nameLen <= 0 || q + nameLen > end) break
+                    if (nameLen <= 0 || q + nameLen > listEnd) break
                     if (nameType == 0) {
                         val name = String(b, q, nameLen, Charsets.US_ASCII)
                         return ClientHelloInfo(name, q, q + nameLen, RECORD_HEADER + recLen)

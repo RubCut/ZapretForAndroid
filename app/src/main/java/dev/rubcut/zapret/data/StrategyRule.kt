@@ -11,8 +11,8 @@ import java.util.UUID
 data class Strategy(
     val desync: DesyncMode = DesyncMode.MULTISPLIT,
     val splitPositions: List<SplitPos> = listOf(SplitPos.MIDSNI),
-    /** Значение байта срочных данных для [DesyncMode.OOB]. */
-    val urgentByte: Int = 0,
+    /** Байт срочных данных для [DesyncMode.OOB]; null — приём не задан. */
+    val urgentByte: Int? = null,
     /** TTL пустышки для [DesyncMode.FAKE]; 0 — не подменять. */
     val fakeTtl: Int = 0,
     val splitCustomPos: Int = 2,
@@ -67,6 +67,8 @@ data class Strategy(
         val o = JSONObject()
         o.put("desync", desync.token)
         o.put("splitPositions", JSONArray(splitPositions.map { it.token }))
+        urgentByte?.let { o.put("urgentByte", it) }
+        o.put("fakeTtl", fakeTtl)
         o.put("splitCustomPos", splitCustomPos)
         o.put("splitDelayMs", splitDelayMs)
         o.put("tlsrecParts", tlsrecParts)
@@ -93,6 +95,8 @@ data class Strategy(
         if (wssizeEnabled) append(" --wssize=").append(wssizePackets).append(':').append(wssizeWindow)
         if (anyProtocol) append(" --dpi-desync-any-protocol=1")
         if (sniCaseMix) append(" --hostcase")
+        urgentByte?.let { append(" --dpi-desync-oob=").append(it) }
+        if (fakeTtl > 0) append(" --dpi-desync-fake-ttl=").append(fakeTtl)
         if (poisonEnabled) append(" --poison").append(if (poisonSni.isNotBlank()) "=$poisonSni" else "")
             .append(" --poison-delay=").append(poisonDelayMs)
     }
@@ -112,6 +116,8 @@ data class Strategy(
             return d.copy(
                 desync = DesyncMode.fromToken(o.optString("desync", d.desync.token)),
                 splitPositions = posList,
+                urgentByte = if (o.has("urgentByte")) o.getInt("urgentByte") else null,
+                fakeTtl = o.optInt("fakeTtl", d.fakeTtl),
                 splitCustomPos = o.optInt("splitCustomPos", d.splitCustomPos),
                 splitDelayMs = o.optInt("splitDelayMs", d.splitDelayMs),
                 tlsrecParts = o.optInt("tlsrecParts", d.tlsrecParts),

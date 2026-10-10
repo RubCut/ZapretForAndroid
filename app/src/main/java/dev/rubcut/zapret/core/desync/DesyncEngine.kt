@@ -48,7 +48,16 @@ class DesyncPlan(
      *
      * Ноль означает «не подменять»: значение 0 нельзя отличить от молчания.
      */
-    val fakeTtl: Int = 0
+    val fakeTtl: Int = 0,
+    /**
+     * Содержимое пустышки для [DesyncMode.FAKE].
+     *
+     * Это заведомо безвредное hello (чужой SNI), а не настоящий ClientHello:
+     * слать туда настоящие данные бессмысленно — фильтр найдёт в них тот же
+     * SNI. Отдельно от [writes], как и [poison]: настоящие данные идут следом
+     * обычным способом.
+     */
+    val fakeDummy: ByteArray? = null
 ) {
     val segmentCount: Int get() = writes.size
 
@@ -122,7 +131,7 @@ class DesyncEngine {
             else -> ""
         }
         fun giveUp(reason: String) =
-            if (lead.isNotEmpty()) DesyncPlan(listOf(data), true, lead.trim(), host, poison, s.poisonDelayMs)
+            if (lead.isNotEmpty()) DesyncPlan(listOf(data), true, lead.removeSuffix("+ ").trim(), host, poison, s.poisonDelayMs)
             else DesyncPlan.passthrough(payload, reason, host)
 
         if (s.desync == DesyncMode.NONE) return giveUp("off")
@@ -137,6 +146,9 @@ class DesyncEngine {
         // первом хопе, до сервера не доходит, но инлайновый фильтр её видит и
         // разбирает — до настоящего ClientHello дело может не дойти.
         if (s.desync == DesyncMode.OOB) {
+            // Ноль — законное значение байта, поэтому «не задано» выражается
+            // отсутствием (null), а не нулём: иначе отличить их нельзя.
+            val urgent = s.urgentByte ?: return giveUp("не задан OOB-байт")
             val positions = collectPositions(s, data, hello, httpHostRange)
                 .filter { it in 1 until data.size }
                 .distinct()
@@ -145,18 +157,21 @@ class DesyncEngine {
             if (writes.size >= 2) {
                 return DesyncPlan(
                     writes, true, "${lead}oob → ${writes.size} записей", host,
-                    poison, s.poisonDelayMs, urgentByte = s.urgentByte and 0xFF
+                    poison, s.poisonDelayMs, urgentByte = urgent and 0xFF
                 )
             }
             return giveUp("нет точки разбиения для OOB")
         }
         if (s.desync == DesyncMode.FAKE) {
             if (s.fakeTtl <= 0) return giveUp("не задан TTL пустышки")
-            // Пустышка — это первая часть настоящего ClientHello: её разбор
-            // фильтром сбивает поиск имени, а до сервера она не доходит.
+            if (!isTls || hello == null) return giveUp("fake только для TLS")
+            // Пустышка — заведомо безвредное hello с чужим SNI (как poison):
+            // её разбор фильтром сбивает поиск имени, а до сервера она не
+            // доходит из-за малого TTL. Настоящие данные идут следом.
+            val dummy = Tls.poisonHello(s.poisonSni.ifBlank { DEFAULT_POISON_SNI })
             return DesyncPlan(
                 listOf(data), true, "${lead}fake ttl=${s.fakeTtl}", host,
-                poison, s.poisonDelayMs, fakeTtl = s.fakeTtl
+                poison, s.poisonDelayMs, fakeTtl = s.fakeTtl, fakeDummy = dummy
             )
         }
 

@@ -196,6 +196,68 @@ class DesyncTest {
             assertTrue("разбиение изменило данные", rejoined.contentEquals(data))
         }
     }
+
+    /* ================================================================ */
+    /*  Приёмы на параметрах сокета: OOB и FAKE                          */
+    /* ================================================================ */
+
+    /**
+     * OOB обязан дать разбиение И байт для отправки: без любого из двух план
+     * бесполезен. Сам байт движок не отправляет — это делает сокет, — но план
+     * обязан его нести, иначе соединение уйдёт обычным разрезом молча.
+     */
+    @Test
+    fun oobBranchEmitsSplitWithUrgentByte() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.OOB, splitPositions = listOf(SplitPos.MIDSNI), urgentByte = 0)
+        )
+        assertTrue("OOB обязан применяться", p.applied)
+        assertTrue("OOB без разбиения бессмысленен: ${p.writes.size}", p.writes.size >= 2)
+        assertEquals("байт обязан дойти до сокета", 0, p.urgentByte)
+    }
+
+    /** OOB без заданного байта (null) — отказ, а не молчаливый разрез. */
+    @Test
+    fun oobWithoutByteGivesUp() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.OOB, splitPositions = listOf(SplitPos.MIDSNI), urgentByte = null)
+        )
+        assertTrue("без байта OOB обязан отказаться, а не резать молча", !p.applied)
+    }
+
+    /**
+     * FAKE несёт безвредную пустышку, а не настоящий ClientHello: слать туда
+     * настоящие данные бессмысленно — фильтр найдёт в них тот же SNI.
+     */
+    @Test
+    fun fakeBranchCarriesBenignDummy() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.FAKE, fakeTtl = 8)
+        )
+        assertTrue("FAKE обязан применяться", p.applied)
+        assertEquals(8, p.fakeTtl)
+        val dummy = p.fakeDummy
+        assertTrue("пустышка обязана быть", dummy != null)
+        dummy!!
+        val sni = Tls.parseClientHello(dummy, 0, dummy.size)?.sni
+        assertTrue(
+            "в пустышке не должно быть запрещённого имени, а там $sni",
+            sni != null && "youtube" !in sni
+        )
+    }
+
+    /** FAKE без TTL или не для TLS — отказ. */
+    @Test
+    fun fakeWithoutTtlGivesUp() {
+        val p = plan(
+            "www.youtube.com",
+            Strategy(desync = DesyncMode.FAKE, fakeTtl = 0)
+        )
+        assertTrue("FAKE без TTL обязан отказаться", !p.applied)
+    }
 }
 
 /**

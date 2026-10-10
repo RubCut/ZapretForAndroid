@@ -49,7 +49,15 @@ object Http {
         while (j < text.length && text[j] != '\r' && text[j] != '\n') j++
         while (j > i && (text[j - 1] == ' ' || text[j - 1] == '\t')) j--
         if (j <= i) return null
-        return (off + i) to (off + j)
+        // Порт — не часть имени: `Host: example.com:8080` иначе даёт MIDSNI
+        // по строке с портом, и точка реза уезжает. IPv6-литерал в скобках
+        // (`[::1]:8080`) режем по закрывающей скобке, а не по первому ':'.
+        val hostEnd = if (text[i] == '[') {
+            (text.indexOf(']', i).takeIf { it in i until j } ?: (j - 1)) + 1
+        } else {
+            text.indexOf(':', i).takeIf { it in i until j } ?: j
+        }
+        return (off + i) to (off + hostEnd)
     }
 
     /**

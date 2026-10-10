@@ -406,69 +406,88 @@ class TcpConnection(
             null
         }
 
-        // Подставная запись уходит отдельной записью ДО настоящих данных и с
-        // паузой после: DPI должен успеть разобрать её и споткнуться, пока
-        // настоящий ClientHello ещё не начал приходить. Без паузы замеры
-        // показывают обратное — подстава сливается с настоящей записью, DPI
-        // разбирает обе вместе и находит заблокированный домен.
-        plan.poison?.let { poison ->
-            out.write(poison)
-            out.flush()
-            TrafficStats.up(poison.size)
-            if (plan.poisonDelayMs > 0) delay(plan.poisonDelayMs.toLong())
-        }
-
-        // Пустышка с малым TTL уходит ПЕРВОЙ: она должна умереть на первом хопе,
-// до сервера не дойти, но инлайновый фильтр по пути её увидит. Настоящие
-// данные идут следом с обычным TTL, иначе соединение просто не доедет.
-        if (plan.fakeTtl > 0) {
-            val dummy = plan.writes.firstOrNull() ?: payload
-            val ok = raw != null && runCatching {
-                raw.setTtl(plan.fakeTtl)
-                out.write(dummy)
+        try {
+            // Подставная запись уходит отдельной записью ДО настоящих данных и с
+            // паузой после: DPI должен успеть разобрать её и споткнуться, пока
+            // настоящий ClientHello ещё не начал приходить. Без паузы замеры
+            // показывают обратное — подстава сливается с настоящей записью, DPI
+            // разбирает обе вместе и находит заблокированный домен.
+            plan.poison?.let { poison ->
+                out.write(poison)
                 out.flush()
-                raw.resetTtl()
-            }.isSuccess
-            if (!ok) {
-                // Без управления TTL пустышка ушла бы как обычные данные и
-                // дошла до сервера. Лучше не отправлять вовсе, чем сломать
-                // рукопожатие, — приём просто не сработает.
-                LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
+                TrafficStats.up(poison.size)
+                if (plan.poisonDelayMs > 0) delay(plan.poisonDelayMs.toLong())
             }
-            TrafficStats.up(dummy.size)
-            if (plan.poisonDelayMs > 0) delay(plan.poisonDelayMs.toLong())
-        }
 
-        for ((index, write) in plan.writes.withIndex()) {
-            val isLast = index == plan.writes.size - 1
-            // Последний фрагмент уходит с байтом срочных данных: на проводе он
-            // есть, в обычном потоке получателя — нет, и из-за этого разбор
-            // имени сбивается. Если MSG_OOB не прошёл, пишем как обычные данные.
-            if (isLast && plan.urgentByte != null && raw?.sendWithUrgent(write, plan.urgentByte) == true) {
-                TrafficStats.up(write.size + 1)
-            } else {
+            // Пустышка с малым TTL уходит ПЕРВОЙ: она должна умереть на
+            // первом хопе, до сервера не дойти, но инлайновый фильтр по пути
+            // её увидит. Содержимое — заведомо безвредное hello из плана, а не
+            // настоящие данные: слать туда настоящий ClientHello бессмысленно,
+            // фильтр найдёт в нём тот же SNI. Настоящие данные идут следом с
+            // обычным TTL, иначе соединение просто не доедет.
+            if (plan.fakeTtl > 0 && plan.fakeDummy != null) {
+                val sent = raw != null && runCatching {
+                    raw.setTtl(plan.fakeTtl)
+                    out.write(plan.fakeDummy)
+                    out.flush()
+                    raw.resetTtl()
+                }.isSuccess
+                if (sent) {
+                    TrafficStats.up(plan.fakeDummy.size)
+                } else {
+                    // Без управления TTL пустышка ушла бы как обычные данные и
+                    // дошла до сервера. Не отправляем вовсе — приём не сработает,
+                    // но рукопожатие не сломается.
+                    LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
+                }
+                // Пауза нужна, чтобы DPI успел разобрать пустышку до настоящих
+                // данных — та же причина, что у poisonDelayMs.
+                val pause = maxOf(strategy.splitDelayMs, plan.poisonDelayMs)
+                if (pause > 0) delay(pause.toLong())
+            }
+
+            // OOB: первый фрагмент уходит обычно, затем один байт срочных
+            // данных, затем остаток. На проводе байт есть, сервер его
+            // пропускает, а разбор имени у фильтра сбивается. Если MSG_OOB не
+            // взялся — байт НЕ дописываем обычным способом (это сломало бы
+            // поток лишним байтом), приём вырождается в обычный разрез.
+            var oobOk = plan.urgentByte == null
+            for ((index, write) in plan.writes.withIndex()) {
                 out.write(write)
                 out.flush()
                 TrafficStats.up(write.size)
+                if (index == 0 && plan.urgentByte != null) {
+                    oobOk = raw?.sendUrgentByte(plan.urgentByte) == true
+                    if (!oobOk) {
+                        LogManager.d(LogTag.DPI, "OOB не взялся — ушёл обычный разрез")
+                    }
+                }
+                if (index < plan.writes.size - 1 && strategy.splitDelayMs > 0) {
+                    delay(strategy.splitDelayMs.toLong())
+                }
             }
-            if (!isLast && strategy.splitDelayMs > 0) {
-                delay(strategy.splitDelayMs.toLong())
+            if (plan.applied) {
+                TrafficStats.desynced()
+                // Если OOB не взялся, в журнал честно пишем разрез: приём с
+                // байтом не состоялся, хвастаться им нельзя.
+                val technique =
+                    if (plan.urgentByte != null && !oobOk) plan.technique + " (без oob)"
+                    else plan.technique
+                desyncApplied = technique
+                LogManager.i(
+                    LogTag.DPI,
+                    "$technique · ${plan.host ?: serverAddr.hostAddress}:$serverPort · ${decision.reason}"
+                )
+            } else if (cfg.verboseLog) {
+                LogManager.d(LogTag.DPI, "пропуск ${plan.host ?: serverAddr.hostAddress}:$serverPort — ${plan.technique}")
             }
+        } finally {
+            // Дескриптор держит ссылку на сокет: без закрытия он переживёт
+            // соединение и утёкнет. Именно try/finally, а не close() в конце:
+            // out.write бросает исключение на оборванном соединении, и без
+            // finally дескриптор тёк бы на каждом таком обрыве.
+            raw?.close()
         }
-        if (plan.applied) {
-            TrafficStats.desynced()
-            desyncApplied = plan.technique
-            LogManager.i(
-                LogTag.DPI,
-                "${plan.technique} · ${plan.host ?: serverAddr.hostAddress}:$serverPort · ${decision.reason}"
-            )
-        } else if (cfg.verboseLog) {
-            LogManager.d(LogTag.DPI, "пропуск ${plan.host ?: serverAddr.hostAddress}:$serverPort — ${plan.technique}")
-        }
-        stack.track(this, detectedHost, plan.technique, plan.applied)
-        // Дескриптор держит ссылку на сокет: без закрытия он переживёт соединение
-        // и утёкнет. Закрываем сразу — он нужен только на время отправки.
-        raw?.close()
     }
 
     private fun writePlain(out: java.io.OutputStream, payload: ByteArray) {

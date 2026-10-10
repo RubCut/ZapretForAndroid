@@ -10,6 +10,8 @@ import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
@@ -35,6 +37,13 @@ data class TuneResult(val name: String, val strategy: Strategy, val ok: Int, val
 class StrategyAutopilot(private val stack: TcpStack) {
 
     private val portCounter = AtomicInteger(45000)
+
+    /**
+     * Зонды идут строго по одному: `packetWriter.tap` и `probeFor` — общие на
+     * весь стек, и два параллельных зонда затирали бы друг друга, а `finally`
+     * чужого зонда гасил бы tap посреди чужого приёма.
+     */
+    private val probeMutex = Mutex()
 
     companion object {
         val CANDIDATES: List<Pair<String, Strategy>> = listOf(
@@ -343,7 +352,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // подошёл ни один» невозможно читать. Если адрес отвечает с чужим
             // SNI, фильтр смотрит на содержимое и приёмы байтов бесполезны;
             // если не отвечает ни с тем — фильтр по адресу, и чинить тут нечего.
-            val recon = probeRecon(addr, host)
+            val recon = probeRecon(addr, host, timeoutMs = perHostTimeoutMs)
             if (recon != null) {
                 LogManager.i(LogTag.DPI, "Разведка $host → ${recon.first} · ${recon.second}")
                 onProgress("$host: разведка → ${recon.first}")
@@ -405,7 +414,8 @@ class StrategyAutopilot(private val stack: TcpStack) {
         host: String,
         strategy: Strategy,
         timeoutMs: Long = 6000
-    ): Verdict = withTimeoutOrNull(timeoutMs) {
+    ): Verdict = probeMutex.withLock {
+        withTimeoutOrNull(timeoutMs) {
         // Эфемерные порты, а не весь диапазон: младшие (<1024) привилегированы,
         // а 0 и вовсе недопустим как порт источника.
         val clientPort = 32768 + (portCounter.incrementAndGet() % 28232)
@@ -486,6 +496,9 @@ class StrategyAutopilot(private val stack: TcpStack) {
         } finally {
             stack.probeFor = null
             stack.packetWriter.tap = null
+            // Канал больше никто не читает: без отмены висит в памяти вместе
+            // с необработанными пакетами чужого трафика, попавшими в tap.
+            captured.cancel()
             runCatching {
                 feed(
                     clientTcp(addr, clientPort, port, clientIsn + 1, 0, TcpFlag.RST)
@@ -494,6 +507,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
         }
         result
     } ?: Verdict.TIMEOUT
+    }
 
     /**
  * Разведка: отвечает ли тот же адрес с ЧУЖИМ именем в SNI.
@@ -518,18 +532,18 @@ class StrategyAutopilot(private val stack: TcpStack) {
 private suspend fun probeRecon(
     addr: InetAddress,
     host: String,
-    benign: String = "www.google.com"
-): Pair<Verdict, Verdict>? {
+    benign: String = "www.google.com",
+    timeoutMs: Long = 6000
+): Pair<String, String>? {
     val passive = dev.rubcut.zapret.data.Strategy(desync = dev.rubcut.zapret.data.DesyncMode.NONE)
-    val own = probeVerdict(addr, 443, host, passive, 6000)
-    val other = probeVerdict(addr, 443, benign, passive, 6000)
+    val own = probeVerdict(addr, 443, host, passive, timeoutMs)
+    val other = probeVerdict(addr, 443, benign, passive, timeoutMs)
     val ownText = describeVerdict(own)
     val otherText = describeVerdict(other)
     val conclusion = when {
         own == Verdict.HELLO -> "SNI $host проходит — блокировки нет"
-        other == Verdict.HELLO && own != Verdict.HELLO ->
+        other == Verdict.HELLO ->
             "фильтр по содержимому: чужой SNI на этом же адресе отвечает"
-        other == Verdict.HELLO -> "свой SNI не проходит, чужой отвечает — фильтр по содержимому"
         else -> "адрес молчит на любом SNI — похоже на блокировку по адресу или сети"
     }
     return "$ownText, чужой SNI → $otherText ($conclusion)" to ownText

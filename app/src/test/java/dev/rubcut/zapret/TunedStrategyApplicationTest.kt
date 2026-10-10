@@ -147,8 +147,7 @@ class TunedStrategyApplicationTest {
 
     /** Правило подбора должно пережить перезапуск приложения: JSON-поля обратимы. */
     @Test
-    fun generatedFlagSurvivesSerialization() {
-        val base = Presets.apply(ProfileId.YOUTUBE, AppConfig())
+    fun generatedFlagSurvivesSerialization() {        val base = Presets.apply(ProfileId.YOUTUBE, AppConfig())
         val tuned = Strategy(desync = DesyncMode.MULTISPLIT, splitPositions = listOf(SplitPos.FIRST))
         val cfg = base.withTunedPerHost(mapOf("www.youtube.com" to ("a" to tuned)), base.tcpPorts)
 
@@ -162,5 +161,29 @@ class TunedStrategyApplicationTest {
             cfg.rules.first { it.isGenerated }.strategy,
             restored.rules.first { it.isGenerated }.strategy
         )
+    }
+
+    /**
+     * Параметры OOB/FAKE обязаны пережить сериализацию — и включая null.
+     *
+     * Именно здесь терялись новые поля: toJson их не писал, fromJson не читал,
+     * и победа OOB/FAKE в автоподборе после рестарта применялась без параметров.
+     */
+    @Test
+    fun oobFakeParamsSurviveSerialization() {
+        val oob = Strategy(desync = DesyncMode.OOB, splitPositions = listOf(SplitPos.MIDSNI), urgentByte = 7)
+        val fake = Strategy(desync = DesyncMode.FAKE, fakeTtl = 8)
+        val plain = Strategy(desync = DesyncMode.SPLIT, urgentByte = null, fakeTtl = 0)
+
+        for (s in listOf(oob, fake, plain)) {
+            val restored = Strategy.fromJson(s.toJson())
+            assertEquals("стратегия $s обязана пережить round-trip", s, restored)
+        }
+
+        // Явное отличие null от 0: 0x00 — законное значение байта.
+        val withZero = Strategy(desync = DesyncMode.OOB, urgentByte = 0)
+        assertEquals(0, Strategy.fromJson(withZero.toJson()).urgentByte)
+        val without = Strategy(desync = DesyncMode.OOB, urgentByte = null)
+        assertEquals(null, Strategy.fromJson(without.toJson()).urgentByte)
     }
 }

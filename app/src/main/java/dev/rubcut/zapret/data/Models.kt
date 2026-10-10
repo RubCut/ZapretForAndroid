@@ -1,5 +1,15 @@
 package dev.rubcut.zapret.data
 
+/**
+ * Текущая версия схемы [AppConfig].
+ *
+ * 1 — всё, что было до введения версионирования (без OOB/FAKE, со старыми
+ *     правилами YouTube: смена регистра + разрыв по первому байту).
+ * 2 — правила профилей освежены (tlsrec + середина домена, без смены
+ *     регистра), добавлены поля urgentByte/fakeTtl.
+ */
+const val CURRENT_CONFIG_VERSION = 2
+
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -217,6 +227,10 @@ data class AppConfig(
     val poisonSni: String = "",
     /** Пауза между подставой и настоящими данными, мс. */
     val poisonDelayMs: Int = 50,
+    /** Байт срочных данных для общей OOB-стратегии; null — не задан. */
+    val urgentByte: Int? = null,
+    /** TTL пустышки для общей FAKE-стратегии; 0 — не подменять. */
+    val fakeTtl: Int = 0,
 
     // Фильтры
     val tcpPorts: String = "80,443,2053,2082,2083,2086,2087,2095,2096,8443",
@@ -254,7 +268,14 @@ data class AppConfig(
     val dnsCache: Boolean = true,
     val dnsCacheTtlSec: Int = 300,
     val dnsBlockAds: Boolean = false,
-    val dnsFakeProtection: Boolean = true
+    val dnsFakeProtection: Boolean = true,
+    /**
+     * Версия схемы конфигурации. Нужна, чтобы обновление приложения могло
+     * освежить устаревшие правила, не трогая настройки пользователя.
+     * Без неё владельцы старых установок навсегда оставались на правилах
+     * позапрошлой версии — и проверяли стратегию, которой уже нет.
+     */
+    val configVersion: Int = CURRENT_CONFIG_VERSION
 ) {
     val tcpFilter: PortFilter get() = PortFilter.parse(tcpPorts)
     val udpFilter: PortFilter get() = PortFilter.parse(udpPorts)
@@ -263,6 +284,8 @@ data class AppConfig(
     fun toStrategy(): Strategy = Strategy(
         desync = desync,
         splitPositions = splitPositions,
+        urgentByte = urgentByte,
+        fakeTtl = fakeTtl,
         splitCustomPos = splitCustomPos,
         splitDelayMs = splitDelayMs,
         tlsrecParts = tlsrecParts,
@@ -300,6 +323,8 @@ data class AppConfig(
         o.put("poisonEnabled", poisonEnabled)
         o.put("poisonSni", poisonSni)
         o.put("poisonDelayMs", poisonDelayMs)
+        urgentByte?.let { o.put("urgentByte", it) }
+        o.put("fakeTtl", fakeTtl)
 
         o.put("tcpPorts", tcpPorts)
         o.put("udpPorts", udpPorts)
@@ -334,6 +359,7 @@ data class AppConfig(
         o.put("dnsCacheTtlSec", dnsCacheTtlSec)
         o.put("dnsBlockAds", dnsBlockAds)
         o.put("dnsFakeProtection", dnsFakeProtection)
+        o.put("configVersion", configVersion)
         return o
     }
 
@@ -367,6 +393,8 @@ data class AppConfig(
                 poisonEnabled = o.optBoolean("poisonEnabled", d.poisonEnabled),
                 poisonSni = o.optString("poisonSni", d.poisonSni),
                 poisonDelayMs = o.optInt("poisonDelayMs", d.poisonDelayMs),
+                urgentByte = if (o.has("urgentByte")) o.getInt("urgentByte") else null,
+                fakeTtl = o.optInt("fakeTtl", d.fakeTtl),
 
                 tcpPorts = o.optString("tcpPorts", d.tcpPorts),
                 udpPorts = o.optString("udpPorts", d.udpPorts),
@@ -400,7 +428,9 @@ data class AppConfig(
                 dnsCache = o.optBoolean("dnsCache", d.dnsCache),
                 dnsCacheTtlSec = o.optInt("dnsCacheTtlSec", d.dnsCacheTtlSec),
                 dnsBlockAds = o.optBoolean("dnsBlockAds", d.dnsBlockAds),
-                dnsFakeProtection = o.optBoolean("dnsFakeProtection", d.dnsFakeProtection)
+                dnsFakeProtection = o.optBoolean("dnsFakeProtection", d.dnsFakeProtection),
+                // Старого JSON без версии — это всегда версия 1.
+                configVersion = o.optInt("configVersion", 1)
             )
         }
 

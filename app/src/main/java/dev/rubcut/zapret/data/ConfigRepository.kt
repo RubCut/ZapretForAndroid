@@ -68,13 +68,40 @@ class ConfigRepository(private val context: Context, scope: CoroutineScope) {
     }
 
     private suspend fun write(value: AppConfig) {
-        context.zapretDataStore.edit { prefs -> prefs[CONFIG_KEY] = value.toJson().toString() }
-        cached = value
+        // Версия штампуется при каждой записи: откат назад невозможен.
+        val stamped = value.copy(configVersion = CURRENT_CONFIG_VERSION)
+        context.zapretDataStore.edit { prefs -> prefs[CONFIG_KEY] = stamped.toJson().toString() }
+        cached = stamped
     }
 
-    private fun decode(raw: String?): AppConfig =
-        if (raw.isNullOrBlank()) factory()
-        else runCatching { AppConfig.fromJson(JSONObject(raw)) }.getOrElse { factory() }
+    private fun decode(raw: String?): AppConfig {
+        if (raw.isNullOrBlank()) return factory()
+        val parsed = runCatching { AppConfig.fromJson(JSONObject(raw)) }.getOrElse { return factory() }
+        return migrate(parsed)
+    }
+
+    /**
+     * Освежение устаревших правил после обновления приложения.
+     *
+     * Обновляются ТОЛЬКО правила не-CUSTOM профилей — и только они: DNS,
+     * порты и прочие настройки пользователя не трогаем. Правила, созданные
+     * автоподбором (`isGenerated`), сохраняются впереди свежих — иначе
+     * обновление стирало бы подобранную стратегию.
+     *
+     * Без этого владельцы старых установок навсегда оставались на правилах
+     * позапрошлой версии (у нас так уже было: профиль говорил tlsrec, а
+     * применялась смена регистра с разрывом по первому байту).
+     */
+    private fun migrate(cfg: AppConfig): AppConfig {
+        if (cfg.configVersion >= CURRENT_CONFIG_VERSION) return cfg
+        if (cfg.profile == ProfileId.CUSTOM) return cfg.copy(configVersion = CURRENT_CONFIG_VERSION)
+        val fresh = Presets.apply(cfg.profile, AppConfig())
+        val generated = cfg.rules.filter { it.isGenerated }
+        return cfg.copy(
+            rules = generated + fresh.rules,
+            configVersion = CURRENT_CONFIG_VERSION
+        )
+    }
 
     private companion object {
         val CONFIG_KEY: Preferences.Key<String> = stringPreferencesKey("config_json")

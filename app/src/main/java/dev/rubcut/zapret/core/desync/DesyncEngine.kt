@@ -160,7 +160,7 @@ class DesyncEngine {
         val ordered = orderedPositions(s, positions, hello)
 
         val single = s.desync == DesyncMode.SPLIT || s.desync == DesyncMode.TLSREC
-        val chosen = if (single) listOf(ordered.max()) else ordered
+        val chosen = if (single) listOf(ordered.maxOrNull() ?: return giveUp("разбиение не удалось")) else ordered
         val writes = splitAt(data, chosen)
         if (writes.size < 2) return giveUp("разбиение не удалось")
 

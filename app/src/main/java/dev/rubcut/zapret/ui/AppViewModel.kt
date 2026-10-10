@@ -304,8 +304,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // общий кандидат либо не подходит никому, либо ломает тех, кто
                 // и так работает.
                 val perHost = StrategyAutopilot(stack).tunePerHost(hosts, lookup = lookup)
-                val result = perHost.values.firstOrNull()
-                if (result == null) {
+                val winner = perHost.values.firstOrNull()?.second
+                if (winner == null) {
                     autopilotResult.value = app.getString(R.string.autopilot_fail)
                 } else {
                     // Сохраняем стратегию целиком: усечение до 4 полей молча
@@ -313,22 +313,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // не применялся бы, и следующий автоподбор находил бы то же самое.
                     update {
                         it.copy(
-                            desync = result.strategy.desync,
-                            splitPositions = result.strategy.splitPositions,
-                            splitCustomPos = result.strategy.splitCustomPos,
-                            splitDelayMs = result.strategy.splitDelayMs,
-                            tlsrecParts = result.strategy.tlsrecParts,
-                            wssizeEnabled = result.strategy.wssizeEnabled,
-                            wssizePackets = result.strategy.wssizePackets,
-                            wssizeWindow = result.strategy.wssizeWindow,
-                            anyProtocol = result.strategy.anyProtocol,
-                            sniCaseMix = result.strategy.sniCaseMix,
-                            poisonEnabled = result.strategy.poisonEnabled,
-                            poisonSni = result.strategy.poisonSni,
-                            poisonDelayMs = result.strategy.poisonDelayMs
+                            desync = winner.desync,
+                            splitPositions = winner.splitPositions,
+                            splitCustomPos = winner.splitCustomPos,
+                            splitDelayMs = winner.splitDelayMs,
+                            tlsrecParts = winner.tlsrecParts,
+                            wssizeEnabled = winner.wssizeEnabled,
+                            wssizePackets = winner.wssizePackets,
+                            wssizeWindow = winner.wssizeWindow,
+                            anyProtocol = winner.anyProtocol,
+                            sniCaseMix = winner.sniCaseMix,
+                            poisonEnabled = winner.poisonEnabled,
+                            poisonSni = winner.poisonSni,
+                            poisonDelayMs = winner.poisonDelayMs
                         ).withTunedPerHost(perHost, current.tcpPorts)
                     }
-                    autopilotResult.value = app.getString(R.string.autopilot_done, result.first)
+                    autopilotResult.value = app.getString(
+                        R.string.autopilot_done,
+                        perHost.values.first().first
+                    )
                 }
             } catch (e: Exception) {
                 LogManager.w("Автоподбор не завершился: ${e.message}")

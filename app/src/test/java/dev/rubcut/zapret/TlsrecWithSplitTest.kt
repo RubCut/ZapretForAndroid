@@ -165,8 +165,10 @@ fun repackRecordInPlaceMatchesReferenceAlgorithm() {
     val repacked = actual ?: error("переупаковка не сработала")
 
     // Эталон: вставка заголовка внутрь исходного буфера со сдвигом тела.
-    val buf = hello.copyOf()
-    val rest = recLen - cut
+    // Буфер сначала расширяется (как их Arrays.copyOf с запасом): сдвигать
+    // вправо внутри массива исходного размера некуда — будет AIOOBE.
+    val buf = hello.copyOf(hello.size + Tls.RECORD_HEADER)
+    val rest = recLen - Tls.RECORD_HEADER - cut
     System.arraycopy(buf, Tls.RECORD_HEADER + cut, buf, Tls.RECORD_HEADER + cut + 5, rest)
     System.arraycopy(buf, 0, buf, Tls.RECORD_HEADER + cut, 3)
     buf[3] = (cut shr 8).toByte(); buf[4] = cut.toByte()

@@ -19,6 +19,7 @@ import dev.rubcut.zapret.core.RecentConnection
 import dev.rubcut.zapret.core.SocketProtector
 import dev.rubcut.zapret.core.StatsSnapshot
 import dev.rubcut.zapret.core.TrafficStats
+import dev.rubcut.zapret.core.desync.withTunedPerHost
 import dev.rubcut.zapret.core.dns.DnsResolver
 import dev.rubcut.zapret.core.dns.testResolver
 import dev.rubcut.zapret.config.ParseResult
@@ -294,10 +295,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     else -> listOf("www.google.com")
                 }
                 val resolver = svc.probeResolver
-                val result = StrategyAutopilot(stack).tune(hosts) { host ->
+                val lookup: suspend (String) -> java.net.InetAddress? = { host ->
                     val r = resolver?.lookup(host, DnsType.A)
                     (r as? DnsResult.Addresses)?.list?.firstOrNull()
                 }
+                val current = config.value
+                // По одному кандидату на хост: хосты блокируются по-разному, и
+                // общий кандидат либо не подходит никому, либо ломает тех, кто
+                // и так работает.
+                val perHost = StrategyAutopilot(stack).tunePerHost(hosts, lookup = lookup)
+                val result = perHost.values.firstOrNull()
                 if (result == null) {
                     autopilotResult.value = app.getString(R.string.autopilot_fail)
                 } else {
@@ -319,9 +326,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             poisonEnabled = result.strategy.poisonEnabled,
                             poisonSni = result.strategy.poisonSni,
                             poisonDelayMs = result.strategy.poisonDelayMs
-                        )
+                        ).withTunedPerHost(perHost, current.tcpPorts)
                     }
-                    autopilotResult.value = app.getString(R.string.autopilot_done, result.name)
+                    autopilotResult.value = app.getString(R.string.autopilot_done, result.first)
                 }
             } catch (e: Exception) {
                 LogManager.w("Автоподбор не завершился: ${e.message}")

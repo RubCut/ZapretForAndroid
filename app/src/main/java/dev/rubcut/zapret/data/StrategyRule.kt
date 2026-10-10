@@ -152,7 +152,14 @@ data class StrategyRule(
     val hostSource: HostSource = HostSource.ANY,
     val inlineDomains: String = "",
     val excludeDomains: String = "",
-    val strategy: Strategy = Strategy()
+    val strategy: Strategy = Strategy(),
+    /**
+     * Правило создано автоподбором, а не пользователем.
+     *
+     * Такие правила раздают подобранную стратегию по хостовым группам, поэтому
+     * при следующем подборе их не нужно переписывать общим значением.
+     */
+    val isGenerated: Boolean = false
 ) {
     val tcpFilter: PortFilter get() = PortFilter.parse(tcpPorts)
     val udpFilter: PortFilter get() = PortFilter.parse(udpPorts)
@@ -168,6 +175,7 @@ data class StrategyRule(
         o.put("inlineDomains", inlineDomains)
         o.put("excludeDomains", excludeDomains)
         o.put("strategy", strategy.toJson())
+        o.put("isGenerated", isGenerated)
         return o
     }
 
@@ -205,7 +213,8 @@ data class StrategyRule(
                 hostSource = HostSource.fromToken(o.optString("hostSource", d.hostSource.token)),
                 inlineDomains = o.optString("inlineDomains", ""),
                 excludeDomains = o.optString("excludeDomains", ""),
-                strategy = Strategy.fromJson(o.optJSONObject("strategy"))
+                strategy = Strategy.fromJson(o.optJSONObject("strategy")),
+                isGenerated = o.optBoolean("isGenerated", false)
             )
         }
     }

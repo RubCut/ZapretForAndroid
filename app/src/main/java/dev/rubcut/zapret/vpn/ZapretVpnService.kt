@@ -24,6 +24,7 @@ import dev.rubcut.zapret.core.LogTag
 import dev.rubcut.zapret.core.SocketProtector
 import dev.rubcut.zapret.core.TrafficStats
 import dev.rubcut.zapret.core.desync.ReverseHostCache
+import dev.rubcut.zapret.core.desync.withTunedPerHost
 import dev.rubcut.zapret.core.dns.DnsHandler
 import dev.rubcut.zapret.core.net.IpLiterals
 import dev.rubcut.zapret.core.net.parseIp
@@ -772,41 +773,28 @@ class ZapretVpnService : VpnService() {
                     "(ошибок: $failed). Запускаю автоподбор стратегии"
             )
             val hosts = autopilotHosts(tunnelConfig().profile)
-            val result = try {
-                StrategyAutopilot(stack).tune(hosts) { host ->
+            val base = AppGraph.config.current
+            val perHost = try {
+                StrategyAutopilot(stack).tunePerHost(hosts) { host ->
                     val r = resolver?.lookup(host, DnsType.A)
                     (r as? DnsResult.Addresses)?.list?.firstOrNull()
                 }
             } catch (e: Exception) {
                 LogManager.w("Автоподбор завершился ошибкой: ${e.message}")
-                null
+                emptyMap()
             }
-            if (result == null) {
+            if (perHost.isEmpty()) {
                 LogManager.w(
                     "Автоподбор: ни одна стратегия не получила ответа сервера — дело не в обходе, " +
                         "а в сети, DNS или самом туннеле"
                 )
                 return@launch
             }
-            LogManager.i(LogTag.DPI, "Автоподбор: подошла стратегия «${result.name}» (${result.ok}/${result.total}) — применяю")
+            for ((host, named) in perHost) {
+                LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «${named.first}» — применяю")
+            }
             try {
-                AppGraph.config.update {
-                    it.copy(
-                        desync = result.strategy.desync,
-                        splitPositions = result.strategy.splitPositions,
-                        splitCustomPos = result.strategy.splitCustomPos,
-                        splitDelayMs = result.strategy.splitDelayMs,
-                        tlsrecParts = result.strategy.tlsrecParts,
-                        wssizeEnabled = result.strategy.wssizeEnabled,
-                        wssizePackets = result.strategy.wssizePackets,
-                        wssizeWindow = result.strategy.wssizeWindow,
-                        anyProtocol = result.strategy.anyProtocol,
-                        sniCaseMix = result.strategy.sniCaseMix,
-                        poisonEnabled = result.strategy.poisonEnabled,
-                        poisonSni = result.strategy.poisonSni,
-                        poisonDelayMs = result.strategy.poisonDelayMs
-                    )
-                }
+                AppGraph.config.update { it.withTunedPerHost(perHost, base.tcpPorts) }
             } catch (e: Exception) {
                 LogManager.w("Не удалось сохранить подобранную стратегию: ${e.message}")
             }

@@ -211,6 +211,15 @@ class StrategyAutopilot(private val stack: TcpStack) {
     /**
      * Перебирает кандидатов на [hosts] и возвращает лучшего. null — не подошёл
      * никто (например, хосты вообще недоступны).
+     *
+     * Кандидат считается победителем, только если прошёл ВСЕ хосты. Раньше
+     * проверка шла по набору целиком, из-за чего подбор для YouTube не давал
+     * ничего: YouTube блокируется, Discord — нет, и ни один кандидат не
+     * набирал 2 из 2, поэтому лучший результат отбрасывался.
+     *
+     * Поэтому хосты проверяются по одному: для каждого ищется свой победитель,
+     * и стратегии собираются в правила с конкретными доменами. Так обход
+     * настраивается отдельно под YouTube и отдельно под Discord.
      */
     suspend fun tune(
         hosts: List<String>,
@@ -229,6 +238,38 @@ class StrategyAutopilot(private val stack: TcpStack) {
             if (ok > 0 && (best == null || ok > best.ok)) best = TuneResult(name, strategy, ok, hosts.size)
         }
         return best
+    }
+
+    /**
+     * Подбор отдельно для каждого хоста.
+     *
+     * Возвращает стратегию для каждого хоста, для которого нашёлся хоть один
+     * рабочий кандидат. Это то, что нужно, когда хосты блокируются по-разному:
+     * один общий кандидат на всех либо не подходит никому, либо ломает тех,
+     * кто и так работает.
+     *
+     * @return карта «хост → имя победившего кандидата» и его стратегия.
+     */
+    suspend fun tunePerHost(
+        hosts: List<String>,
+        perHostTimeoutMs: Long = 6000,
+        lookup: suspend (String) -> InetAddress?
+    ): Map<String, Pair<String, Strategy>> {
+        val out = LinkedHashMap<String, Pair<String, Strategy>>()
+        for (host in hosts) {
+            val addr = withTimeoutOrNull(5000) { lookup(host) } ?: continue
+            for ((name, strategy) in CANDIDATES) {
+                if (probe(addr, 443, host, strategy, perHostTimeoutMs)) {
+                    out[host] = name to strategy
+                    LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»")
+                    break
+                }
+            }
+            if (!out.containsKey(host)) {
+                LogManager.w(LogTag.DPI, "Автоподбор: для $host не подошёл ни один кандидат")
+            }
+        }
+        return out
     }
 
     /** Одна проверка: полный рукопожатный цикл через стек с принудительной стратегией. */

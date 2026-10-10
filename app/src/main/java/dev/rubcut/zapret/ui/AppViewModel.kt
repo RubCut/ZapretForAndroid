@@ -310,7 +310,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             splitPositions = result.strategy.splitPositions,
                             splitCustomPos = result.strategy.splitCustomPos,
                             splitDelayMs = result.strategy.splitDelayMs,
-                            cutoffChunks = result.strategy.cutoffChunks,
                             tlsrecParts = result.strategy.tlsrecParts,
                             wssizeEnabled = result.strategy.wssizeEnabled,
                             wssizePackets = result.strategy.wssizePackets,

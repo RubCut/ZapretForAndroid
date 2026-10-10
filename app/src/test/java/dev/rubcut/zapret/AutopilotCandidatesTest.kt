@@ -32,8 +32,10 @@ class AutopilotCandidatesTest {
         for ((name, strategy) in StrategyAutopilot.CANDIDATES) {
             // Тест про разбиение: варианты без десинхронизации работают другим
             // приёмом (пассивный — никак, «только смена регистра» — подменой
-            // байта без фрагментов) и разбиения давать не обязаны.
-            if (strategy.desync == DesyncMode.NONE) continue
+            // байта без фрагментов) и разбиения давать не обязаны. FAKE тоже
+            // не про разбиение: его приём — малый TTL пустышки, поток при этом
+            // идёт одним куском сознательно.
+            if (strategy.desync == DesyncMode.NONE || strategy.desync == DesyncMode.FAKE) continue
             val plan = engine.plan(hello, FlowContext(443, null, false), strategy)
             if (!plan.applied || plan.writes.size < 2) {
                 broken += "$name (фрагментов: ${plan.writes.size})"

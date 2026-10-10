@@ -466,13 +466,13 @@ class TcpConnection(
                     delay(strategy.splitDelayMs.toLong())
                 }
             }
+            // Если OOB не взялся, в журнал честно пишем разрез: приём с
+            // байтом не состоялся, хвастаться им нельзя.
+            val technique =
+                if (plan.applied && plan.urgentByte != null && !oobOk) plan.technique + " (без oob)"
+                else plan.technique
             if (plan.applied) {
                 TrafficStats.desynced()
-                // Если OOB не взялся, в журнал честно пишем разрез: приём с
-                // байтом не состоялся, хвастаться им нельзя.
-                val technique =
-                    if (plan.urgentByte != null && !oobOk) plan.technique + " (без oob)"
-                    else plan.technique
                 desyncApplied = technique
                 LogManager.i(
                     LogTag.DPI,
@@ -481,6 +481,7 @@ class TcpConnection(
             } else if (cfg.verboseLog) {
                 LogManager.d(LogTag.DPI, "пропуск ${plan.host ?: serverAddr.hostAddress}:$serverPort — ${plan.technique}")
             }
+            stack.track(this, detectedHost, technique, plan.applied)
         } finally {
             // Дескриптор держит ссылку на сокет: без закрытия он переживёт
             // соединение и утёкнет. Именно try/finally, а не close() в конце:

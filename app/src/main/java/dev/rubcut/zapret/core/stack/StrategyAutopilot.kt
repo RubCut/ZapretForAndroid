@@ -266,7 +266,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 }
             }
             if (!out.containsKey(host)) {
-                LogManager.w(LogTag.DPI, "Автоподбор: для $host не подошёл ни один кандидат")
+                LogManager.w("DPI: автоподбор: для $host не подошёл ни один кандидат")
             }
         }
         return out

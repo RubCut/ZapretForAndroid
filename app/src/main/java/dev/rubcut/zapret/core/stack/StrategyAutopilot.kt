@@ -39,12 +39,40 @@ class StrategyAutopilot(private val stack: TcpStack) {
     companion object {
         val CANDIDATES: List<Pair<String, Strategy>> = listOf(
             "без обработки (прозрачно)" to Strategy(desync = DesyncMode.NONE),
-            // Смена регистра в имени хоста стоит первой среди активных вариантов: она
-            // обходит фильтры, которые полностью пересобирают сегменты, где
-            // разбиение не помогает вовсе.
+
+            // Доказанный победитель идёт ПЕРВЫМ среди активных вариантов.
             //
-            // Порядок вариантов внутри — по замерам на реальном фильтре,
-            // 6 кругов по кругу с байтами самого приложения:
+            // Порядок здесь не косметика: подбор останавливается на первом
+            // успешном кандидате, а каждый провал стоит полный таймаут (6 с).
+            // Стоял девятым — проверенный вариант находился только после восьми
+            // заведомо бесполезных попыток.
+            //
+            // Замеры чужого приложения (ZapretYT 1.0.7) на том же провайдере,
+            // где наш профиль не проходил, 18 замеров каждого варианта:
+            //
+            //   TLS-записи + разбиение   18/18 ·  379 мс · 1,8 МБ/с → 1177 мс
+            //   ByeDPI 19                18/18 ·  383 мс · 1011 КБ/с → 1629 мс
+            //   OOB по слову             18/18 ·  431 мс · 1,0 МБ/с → 2055 мс
+            //   ByeDPI 28                18/18 ·  953 мс → 1516 мс
+            //
+            // То есть побеждает не ByeDPI, а переупаковка ClientHello в
+            // несколько TLS-записей вместе с разрывом потока. Это и самый
+            // быстрый вариант, и с наибольшей пропускной способностью, и он
+            // не опирается на намеренно некорректные handshake-ы, на которых
+            // фильтры учатся учиться. Варианты ByeDPI в РФ сейчас отмирают.
+            "multisplit · tlsrec + первый байт + середина домена" to Strategy(
+                desync = DesyncMode.MULTISPLIT_TLSREC,
+                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                tlsrecParts = 2
+            ),
+
+            // Смена регистра в имени хоста: обходит фильтры, которые полностью
+            // пересобирают сегменты, где разбиение не помогает вовсе. На других
+            // сетях это единственная рабочая стратегия, поэтому из подбора её
+            // не убираем — просто проверяем позже доказанного варианта.
+            //
+            // Порядок внутри — по замерам на реальном фильтре, 6 кругов:
             //
             //   смена регистра, одним куском            6 из 6
             //   смена регистра + разбиение по 1 байту   6 из 6
@@ -53,8 +81,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             //
             // То есть разбиение внутри самого домена приём портит: разрыв
             // попадает ровно в ту строку, которую приём и ломает, и фильтр
-            // получает её обратно склеенной. Сплошной поток надёжнее, поэтому
-            // он и проверяется первым.
+            // получает её обратно склеенной.
             "смена регистра, без разбиения" to Strategy(
                 desync = DesyncMode.NONE,
                 sniCaseMix = true
@@ -65,38 +92,35 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 splitDelayMs = 2,
                 sniCaseMix = true
             ),
+            // Комбинация с midsld и сменой регистра — худшая по замерам (5 из 6),
+            // поэтому уходит в самый конец списка.
             "смена регистра + первый байт + середина домена" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
                 splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
                 splitDelayMs = 2,
                 sniCaseMix = true
             ),
-            // Комбинация FIRST + MIDSNI идёт следом: на фильтрах, которые
-            // смотрят только на первые сегменты, разбиение достаточно, а смена
+
+            // Комбинация FIRST + MIDSNI без смены регистра: на фильтрах, которые
+            // смотрят только на первые сегменты, разбиения достаточно, а смена
             // регистра там не нужна и может навредить строгим CDN.
             "multisplit · первый байт + середина домена" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
                 splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
                 splitDelayMs = 2
             ),
+            "tlsrec · две части" to Strategy(desync = DesyncMode.TLSREC, tlsrecParts = 2),
             "multisplit · первый байт + середина домена + задержка 40 мс" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
                 splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
                 splitDelayMs = 40
             ),
+            "multisplit · первый байт" to Strategy(desync = DesyncMode.MULTISPLIT, splitPositions = listOf(SplitPos.FIRST)),
             "multisplit · середина домена" to Strategy(
                 desync = DesyncMode.MULTISPLIT,
                 splitPositions = listOf(SplitPos.MIDSNI)
             ),
-            "multisplit · первый байт" to Strategy(desync = DesyncMode.MULTISPLIT, splitPositions = listOf(SplitPos.FIRST)),
-            "multisplit · первый байт + середина домена + tlsrec" to Strategy(
-                desync = DesyncMode.MULTISPLIT_TLSREC,
-                splitPositions = listOf(SplitPos.FIRST, SplitPos.MIDSNI),
-                splitDelayMs = 2,
-                tlsrecParts = 2
-            ),
             "split · середина домена" to Strategy(desync = DesyncMode.SPLIT, splitPositions = listOf(SplitPos.MIDSNI)),
-            "tlsrec · две части" to Strategy(desync = DesyncMode.TLSREC, tlsrecParts = 2),
             // Точка SNIEND в одиночку бесполезна: если SNI заканчивается последним байтом
             // приветствия (а у минимальных ClientHello так и есть), разбивать
             // просто нечего и получается один фрагмент. Поэтому в паре с FIRST.

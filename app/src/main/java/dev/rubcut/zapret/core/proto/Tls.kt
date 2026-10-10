@@ -324,7 +324,10 @@ object Tls {
         val recLen = getU16(b, off + 3)
         val bodyOff = off + RECORD_HEADER
         if (bodyOff + recLen > b.size || bodyOff + recLen > off + len) return null
-        val first = at - off
+        // Расстояние считается от начала ТЕЛА, а не от начала записи:
+        // [at] приходит абсолютным смещением, и если мерить от заголовка, то
+        // рез в первых пяти байтах усекал бы заголовок записи.
+        val first = at - bodyOff
         if (first <= 0 || first >= recLen) return null
 
         val tailStart = bodyOff + recLen

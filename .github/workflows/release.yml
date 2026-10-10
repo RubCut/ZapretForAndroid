@@ -70,6 +70,25 @@ jobs:
           fi
           tail -n 30 build-release.log
 
+      # Без этого шага падение релиза снаружи выглядит как «что-то сломалось»:
+      # лог задачи не отдаётся без токена, а причину компиляции не видно нигде.
+      - name: Surface build errors as annotations
+        if: failure()
+        run: |
+          grep -E '^e: |error:|TESTFAIL|GRADLE_RC=|^> Task .*FAILED' build-release.log 2>/dev/null \
+            | head -40 > release-errors.txt || true
+          echo "=== причины падения релиза ==="
+          cat release-errors.txt || true
+          python3 - <<'PY'
+          import os
+          if not os.path.exists("release-errors.txt"):
+              raise SystemExit(0)
+          body = open("release-errors.txt", encoding="utf-8", errors="replace").read()[:18000]
+          esc = body.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print("::error title=release build failed::%s" % esc)
+          PY
+          exit 1
+
       - name: Verify signature
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)

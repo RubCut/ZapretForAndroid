@@ -382,7 +382,7 @@ object Tls {
         putU16Buf(out, cut)
         out.write(b, bodyOff, cut)
         // Вставленный заголовок: тип и версия копируются из первой записи.
-        out.write(b[off]); out.write(b[off + 1]); out.write(b[off + 2])
+        out.write(b, off, 3)
         putU16Buf(out, recLen - cut)
         out.write(b, bodyOff + cut, recLen - cut)
         // Хвост буфера (следующие записи) копируется без изменений.

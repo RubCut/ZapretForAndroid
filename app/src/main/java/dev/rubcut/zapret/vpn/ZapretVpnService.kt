@@ -311,12 +311,17 @@ class ZapretVpnService : VpnService() {
      * бы ломать собственный стек приложения.
      */
     private fun applyLanExclusions(builder: VpnService.Builder) {
-        val nets = listOf(
+        // Типы заданы явно, без деструктуризации: иначе при любой проблеме с
+        // вызовом самого API компилятор сыплет каскадом «Cannot infer type»,
+        // и настоящая причина теряется в шуме.
+        val nets: List<Pair<String, Int>> = listOf(
             "192.168.0.0" to 16,
             "172.16.0.0" to 12,
             "169.254.0.0" to 16
         )
-        for ((addr, prefix) in nets) {
+        for (net in nets) {
+            val addr: String = net.first
+            val prefix: Int = net.second
             runCatching { builder.addExcludedRoute(addr, prefix) }
                 .onFailure { LogManager.w("Не удалось исключить локальную сеть $addr/$prefix: ${it.message}") }
         }

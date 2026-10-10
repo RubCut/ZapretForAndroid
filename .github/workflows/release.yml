@@ -55,7 +55,16 @@ jobs:
       # приложения и без потери настроек.
       - name: Build release APK
         run: |
-          ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease
+          # Лог пишется в файл и дублируется в stdout: причина падения должна
+          # быть видна в логе задачи, а не только в артефакте.
+          set -o pipefail
+          ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease 2>&1 \
+            | tee build-release.log || {
+              echo "=== сборка релиза упала, причины: ==="
+              grep -E '^e: |error:|^> Task .*FAILED|Caused by:|Execution failed' build-release.log \
+                | grep -v '^\s*at ' | head -60 || true
+              exit 1
+            }
 
       - name: Verify signature
         run: |

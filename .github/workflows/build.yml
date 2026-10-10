@@ -171,6 +171,19 @@ jobs:
       - name: Surface build errors as annotations
         if: steps.release.outcome == 'failure' || steps.debug.outcome == 'failure' || steps.test.outcome == 'failure'
         run: |
+          # Настоящая причина падения печатается прямо в лог задачи.
+          #
+          # Раньше причина попадала только в аннотации checks API, а их без
+          # токена не видно: снаружи падение выглядело как «что-то сломалось»
+          # без единой строки диагностики. Строки компилятора Kotlin начинаются
+          # с 'e: ' — их и выводим, плюс вердикты тестов.
+          for f in build-release.log build-debug.log test.log; do
+            [ -f "$f" ] || continue
+            echo "=== причины падения из $f ==="
+            grep -E '^e: |TESTFAIL|TESTSUMMARY|GRADLE_RC=|error:|^> Task .*FAILED|Caused by:' "$f" \
+              | grep -v '^\s*at ' | head -60 || true
+          done
+
           python3 - <<'PY'
           import os, re
 

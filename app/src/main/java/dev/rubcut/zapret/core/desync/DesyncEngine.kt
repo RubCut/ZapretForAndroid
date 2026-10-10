@@ -124,7 +124,7 @@ class DesyncEngine {
             // там же рвётся поток. Раньше запись делилась пополам, то есть граница
             // уезжала совсем в другое место и приём не срабатывал.
             val cutAt = collectPositions(s, data, hello, null)
-                .firstOrNull { it in (RECORD_HEADER + 1) until data.size }
+                .firstOrNull { it in (Tls.RECORD_HEADER + 1) until data.size }
             val repacked = cutAt?.let { Tls.repackRecordAt(data, 0, data.size, it) }
                 ?: Tls.repackRecords(data, 0, data.size, parts)
             if (repacked != null) {

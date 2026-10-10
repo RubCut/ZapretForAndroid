@@ -775,10 +775,12 @@ class ZapretVpnService : VpnService() {
             val hosts = autopilotHosts(tunnelConfig().profile)
             val base = AppGraph.config.current
             val perHost = try {
-                StrategyAutopilot(stack).tunePerHost(hosts) { host ->
+                // Параметр назван явно: после onProgress лямбда в конце
+                // больше не привязывается к lookup.
+                StrategyAutopilot(stack).tunePerHost(hosts, lookup = { host ->
                     val r = resolver?.lookup(host, DnsType.A)
                     (r as? DnsResult.Addresses)?.list?.firstOrNull()
-                }
+                })
             } catch (e: Exception) {
                 LogManager.w("Автоподбор завершился ошибкой: ${e.message}")
                 emptyMap()

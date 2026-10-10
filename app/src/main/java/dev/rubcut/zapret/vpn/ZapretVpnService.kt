@@ -590,33 +590,47 @@ class ZapretVpnService : VpnService() {
                 val autopilot = StrategyAutopilot(stack)
                 for (host in probeTargets) {
                     if (!running) return@launch
-                    val addr = try {
-                        (resolver.lookup(host, DnsType.A) as? DnsResult.Addresses)?.list?.firstOrNull()
+                    // Все адреса, а не первый: первой в ответе может стоять
+                    // заглушка провайдера (подмена через резервный UDP-DNS) или
+                    // прицельно заглушенный IP — один такой адрес не должен
+                    // хоронить вердикт «трафик проходит».
+                    val addrs = try {
+                        (resolver.lookup(host, DnsType.A) as? DnsResult.Addresses)?.list
+                            ?.take(StrategyAutopilot.MAX_PROBE_IPS)
                     } catch (e: Exception) {
                         null
                     }
-                    if (addr == null) {
+                    if (addrs.isNullOrEmpty()) {
                         LogManager.w("Проверка связи: $host — имя не разрешилось, соединение не проверялось")
                         continue
                     }
                     // Стратегия берётся тем же резолвером, что и для настоящего трафика. Иначе
                     // проверка врёт: правила для хоста не применялись бы, и
                     // зонд показывал бы обход там, где его нет, или наоборот.
-                    val decision = try {
-                        stack.resolveFor(443, host, addr, 0)
-                    } catch (e: Exception) {
-                        null
-                    }
-                    val ok = try {
-                        autopilot.probe(addr, 443, host, decision?.strategy ?: cfg.toStrategy(), 9000)
-                    } catch (e: Exception) {
-                        LogManager.w("Проверка связи: $host — сбой зонда: ${e.message}")
-                        false
+                    var ok = false
+                    var lastAddr = addrs[0]
+                    var lastReason = "общая стратегия"
+                    for (addr in addrs) {
+                        if (!running) return@launch
+                        lastAddr = addr
+                        val decision = try {
+                            stack.resolveFor(443, host, addr, 0)
+                        } catch (e: Exception) {
+                            null
+                        }
+                        lastReason = decision?.reason ?: "общая стратегия"
+                        ok = try {
+                            autopilot.probe(addr, 443, host, decision?.strategy ?: cfg.toStrategy(), 9000)
+                        } catch (e: Exception) {
+                            LogManager.w("Проверка связи: $host — сбой зонда: ${e.message}")
+                            false
+                        }
+                        if (ok) break
                     }
                     if (ok) {
-                        LogManager.i(LogTag.VPN, "Проверка связи: $host (${addr.hostAddress}) — TLS ServerHello получен, трафик проходит")
+                        LogManager.i(LogTag.VPN, "Проверка связи: $host (${lastAddr.hostAddress}) — TLS ServerHello получен, трафик проходит")
                     } else {
-                        LogManager.w("Проверка связи: $host (${addr.hostAddress}) — ответа сервера НЕТ (правило: ${decision?.reason ?: "общая стратегия"})")
+                        LogManager.w("Проверка связи: $host (${lastAddr.hostAddress}) — ответа сервера НЕТ (правило: $lastReason)")
                     }
                 }
             }
@@ -839,10 +853,17 @@ class ZapretVpnService : VpnService() {
             val perHost = try {
                 // Параметр назван явно: после onProgress лямбда в конце
                 // больше не привязывается к lookup.
-                StrategyAutopilot(stack).tunePerHost(hosts, lookup = { host ->
-                    val r = resolver?.lookup(host, DnsType.A)
-                    (r as? DnsResult.Addresses)?.list?.firstOrNull()
-                })
+                StrategyAutopilot(stack).tunePerHost(
+                    hosts,
+                    lookup = { host ->
+                        val r = resolver?.lookup(host, DnsType.A)
+                        (r as? DnsResult.Addresses)?.list?.firstOrNull()
+                    },
+                    lookupAll = { host ->
+                        val r = resolver?.lookup(host, DnsType.A)
+                        (r as? DnsResult.Addresses)?.list ?: emptyList()
+                    },
+                )
             } catch (e: Exception) {
                 LogManager.w("Автоподбор завершился ошибкой: ${e.message}")
                 emptyMap()

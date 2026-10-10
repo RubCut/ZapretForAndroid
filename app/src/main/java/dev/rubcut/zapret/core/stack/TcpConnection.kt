@@ -444,13 +444,13 @@ class TcpConnection(
                             raw.resetTtl()
                         }
                     } else {
-                        LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
+                        LogManager.w("DPI: TTL недоступен — fake пропущен (приём не сработает)")
                     }
                 } else {
                     // Без управления TTL пустышка ушла бы как обычные данные и
                     // дошла до сервера. Не отправляем вовсе — приём не сработает,
                     // но рукопожатие не сломается.
-                    LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
+                    LogManager.w("DPI: TTL недоступен — fake пропущен (приём не сработает)")
                 }
                 if (sent) {
                     TrafficStats.up(plan.fakeDummy.size)
@@ -477,7 +477,7 @@ class TcpConnection(
                 if (oobOk) {
                     TrafficStats.up(first.size)
                 } else {
-                    LogManager.d(LogTag.DPI, "OOB не взялся — ушёл обычный разрез")
+                    LogManager.w("DPI: OOB не взялся — ушёл обычный разрез")
                     out.write(first)
                     out.flush()
                     TrafficStats.up(first.size)

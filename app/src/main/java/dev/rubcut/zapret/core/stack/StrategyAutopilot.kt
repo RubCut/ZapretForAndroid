@@ -46,6 +46,16 @@ class StrategyAutopilot(private val stack: TcpStack) {
     private val probeMutex = Mutex()
 
     companion object {
+        /**
+         * Сколько адресов хоста перебирают зонды.
+         *
+         * Один адрес — это лотерея: первой в ответе может стоять заглушка
+         * провайдера или прицельно заглушенный IP. Три — компромисс между
+         * надёжностью вердикта и временем подбора (каждый адрес умножает число
+         * зондов).
+         */
+        const val MAX_PROBE_IPS = 3
+
         val CANDIDATES: List<Pair<String, Strategy>> = listOf(
             "без обработки (прозрачно)" to Strategy(desync = DesyncMode.NONE),
 
@@ -367,36 +377,56 @@ class StrategyAutopilot(private val stack: TcpStack) {
         hosts: List<String>,
         perHostTimeoutMs: Long = 6000,
         lookup: suspend (String) -> InetAddress?,
-        onProgress: (String) -> Unit = {}
+        onProgress: (String) -> Unit = {},
+        /**
+         * Все адреса хоста. По умолчанию — один адрес из [lookup].
+         *
+         * Нужно, потому что зонды проверяют ровно те IP, что вернул резолвер, а
+         * первый адрес в ответе — не всегда живой: провайдер через резервный
+         * UDP-DNS может подмешать адрес-заглушку (видели 8.47.69.5 для
+         * example.com), а DPI — глушить отдельные IP префикса. Проверять один
+         * адрес и объявлять «не подошёл ни один кандидат» — врать: остальные
+         * адреса даже не пробовались.
+         */
+        lookupAll: (suspend (String) -> List<InetAddress>)? = null,
     ): Map<String, Pair<String, Strategy>> {
         val out = LinkedHashMap<String, Pair<String, Strategy>>()
         val total = CANDIDATES.size
         for (host in hosts) {
             onProgress("$host: разрешаю имя…")
-            val addr = withTimeoutOrNull(5000) { lookup(host) }
-            if (addr == null) {
+            val addrs = withTimeoutOrNull(5000) {
+                lookupAll?.invoke(host)?.take(MAX_PROBE_IPS)
+                    ?: listOfNotNull(lookup(host))
+            } ?: emptyList()
+            if (addrs.isEmpty()) {
                 onProgress("$host: имя не разрешилось, пропускаю")
                 LogManager.w("DPI: автоподбор: $host не разрешился")
                 continue
+            }
+            if (addrs.size > 1) {
+                LogManager.i(LogTag.DPI, "Автоподбор: $host → проверяю адреса: ${addrs.joinToString { it.hostAddress ?: "?" }}")
             }
             // Разведка идёт ДО перебора кандидатов: без неё вердикт «не
             // подошёл ни один» невозможно читать. Если адрес отвечает с чужим
             // SNI, фильтр смотрит на содержимое и приёмы байтов бесполезны;
             // если не отвечает ни с тем — фильтр по адресу, и чинить тут нечего.
-            val recon = probeRecon(addr, host, timeoutMs = perHostTimeoutMs)
+            val recon = probeRecon(addrs[0], host, timeoutMs = perHostTimeoutMs)
             if (recon != null) {
                 LogManager.i(LogTag.DPI, "Разведка $host → ${recon.first} · ${recon.second}")
                 onProgress("$host: разведка → ${recon.first}")
             }
-            for ((index, candidate) in CANDIDATES.withIndex()) {
-                val (name, strategy) = candidate
-                onProgress("$host · ${index + 1}/$total · $name")
-                LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name")
-                if (probe(addr, 443, host, strategy, perHostTimeoutMs)) {
-                    out[host] = name to strategy
-                    onProgress("$host: подошло «$name»")
-                    LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»")
-                    break
+            outer@ for (addr in addrs) {
+                val suffix = if (addrs.size > 1) " [${addr.hostAddress}]" else ""
+                for ((index, candidate) in CANDIDATES.withIndex()) {
+                    val (name, strategy) = candidate
+                    onProgress("$host · ${index + 1}/$total · $name$suffix")
+                    LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name$suffix")
+                    if (probe(addr, 443, host, strategy, perHostTimeoutMs)) {
+                        out[host] = "$name$suffix" to strategy
+                        onProgress("$host: подошло «$name»$suffix")
+                        LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»$suffix")
+                        break@outer
+                    }
                 }
             }
             if (!out.containsKey(host)) {
@@ -467,7 +497,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             } ?: run {
                 // Молчание на этом этапе — не DPI, а мёртвый IP или сеть:
                 // до отправки ClientHello дело вообще не дошло.
-                LogManager.d(LogTag.DPI, "зонд $host:${port} «${strategyLabel(strategy)}» → нет SYN-ACK за 4 с")
+                LogManager.d(LogTag.DPI, "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → нет SYN-ACK за 4 с")
                 result = Verdict.NO_SYNACK
                 return@withTimeoutOrNull result
             }
@@ -497,7 +527,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             } ?: run {
                 // SYN-ACK был, а ответа на ClientHello нет — вот это уже
                 // почерк DPI: рукопожатие дошло до сервера, дальше тишина.
-                LogManager.d(LogTag.DPI, "зонд $host:${port} «${strategyLabel(strategy)}» → SYN-ACK есть, ответа на ClientHello нет")
+                LogManager.d(LogTag.DPI, "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → SYN-ACK есть, ответа на ClientHello нет")
                 result = Verdict.SILENCE
                 return@withTimeoutOrNull result
             }
@@ -515,7 +545,7 @@ class StrategyAutopilot(private val stack: TcpStack) {
             }
             LogManager.d(
                 LogTag.DPI,
-                "зонд $host:${port} «${strategyLabel(strategy)}» → ответ 0x%02x (%s)".format(
+                "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → ответ 0x%02x (%s)".format(
                     first,
                     when (result) {
                         Verdict.HELLO -> "ServerHello"
@@ -571,13 +601,14 @@ private suspend fun probeRecon(
     val other = probeVerdict(addr, 443, benign, passive, timeoutMs)
     val ownText = describeVerdict(own)
     val otherText = describeVerdict(other)
+    val ip = addr.hostAddress ?: "?"
     val conclusion = when {
         own == Verdict.HELLO -> "SNI $host проходит — блокировки нет"
         other == Verdict.HELLO ->
             "фильтр по содержимому: чужой SNI на этом же адресе отвечает"
-        else -> "адрес молчит на любом SNI — похоже на блокировку по адресу или сети"
+        else -> "адрес $ip молчит на любом SNI — похоже на блокировку по адресу или сети"
     }
-    return "$ownText, чужой SNI → $otherText ($conclusion)" to ownText
+    return "$ownText, чужой SNI → $otherText [$ip] ($conclusion)" to ownText
 }
 
 private fun describeVerdict(v: Verdict): String = when (v) {
@@ -609,6 +640,11 @@ private fun describeVerdict(v: Verdict): String = when (v) {
         }
         if (s.splitDelayMs > 0) append(" +${s.splitDelayMs}мс")
         if (s.tlsrecParts > 0) append(" tlsrec=${s.tlsrecParts}")
+        // Без TTL/байта кандидаты fake ttl=4/6/8/11 и oob неразличимы в журнале:
+        // все вердикты выглядели как один и тот же «fake midsld», и понять,
+        // какой TTL реально проверялся, было нельзя.
+        if (s.fakeTtl > 0) append(" ttl=${s.fakeTtl}")
+        s.urgentByte?.let { append(" oob=$it") }
     }
 
     private suspend fun receive(ch: Channel<ByteArray>, timeoutMs: Long, pred: (ByteArray) -> Boolean): ByteArray? =

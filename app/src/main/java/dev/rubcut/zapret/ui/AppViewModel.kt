@@ -309,6 +309,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val r = resolver?.lookup(host, DnsType.A)
                     (r as? DnsResult.Addresses)?.list?.firstOrNull()
                 }
+                // Все адреса, а не первый: первой в ответе может стоять
+                // заглушка провайдера или прицельно заглушенный IP — зонды
+                // обязаны попробовать остальные, а не хоронить все стратегии.
+                val lookupAll: suspend (String) -> List<java.net.InetAddress> = { host ->
+                    val r = resolver?.lookup(host, DnsType.A)
+                    (r as? DnsResult.Addresses)?.list ?: emptyList()
+                }
                 val current = config.value
                 // По одному кандидату на хост: хосты блокируются по-разному, и
                 // общий кандидат либо не подходит никому, либо ломает тех, кто
@@ -316,7 +323,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val perHost = StrategyAutopilot(stack).tunePerHost(
                     hosts,
                     lookup = lookup,
-                    onProgress = { autopilotProgress.value = it }
+                    onProgress = { autopilotProgress.value = it },
+                    lookupAll = lookupAll,
                 )
                 val winner = perHost.values.firstOrNull()?.second
                 if (winner == null) {

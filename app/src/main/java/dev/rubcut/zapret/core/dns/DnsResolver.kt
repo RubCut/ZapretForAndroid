@@ -95,9 +95,20 @@ class DnsResolver(
             if (hit != null && hit.expireAt > now) return@withContext DnsResult.Addresses(hit.addresses, ((hit.expireAt - now) / 1000).toInt())
         }
 
-        val result = resolveUpstream(cfg, name, type)
+        val (result, viaFallback) = resolveUpstream(cfg, name, type)
         if (result is DnsResult.Addresses && cfg.dnsCache && result.list.isNotEmpty()) {
-            val ttl = result.ttl.coerceIn(5, 86400)
+            // Ответ с резервного пути (системный UDP после аварии DoH/DoT)
+            // не аутентифицирован: провайдер может подмешать заглушку, а она
+            // потом сидит в кэше часами и травит зонды и соединения (видели
+            // 8.47.69.5 для example.com). Поэтому такой ответ кэшируем не
+            // дольше минуты и помечаем в журнале — следующий запрос скоро
+            // перепроверит через основной режим.
+            val ttl = if (viaFallback) {
+                LogManager.w("DNS: $name отвечен через резерв без проверки — кэширую на 60 с")
+                result.ttl.coerceIn(5, 60)
+            } else {
+                result.ttl.coerceIn(5, 86400)
+            }
             synchronized(cache) {
                 cache[key] = CacheEntry(result.list, System.currentTimeMillis() + ttl * 1000L)
             }
@@ -114,7 +125,12 @@ class DnsResolver(
     @Volatile
     private var secureBypassUntil = 0L
 
-    private fun resolveUpstream(cfg: AppConfig, name: String, type: Int): DnsResult {
+    /**
+     * @return пара «результат» и «ответ пришёл с резервного (непроверенного)
+     *   пути». Резерв — это системный UDP после аварии DoH/DoT: ответ там
+     *   может подменить провайдер, поэтому вызывающий кэширует его недолго.
+     */
+    private fun resolveUpstream(cfg: AppConfig, name: String, type: Int): Pair<DnsResult, Boolean> {
         val secureMode = cfg.dnsMode == DnsMode.DOH || cfg.dnsMode == DnsMode.DOT
         // DoH/DoT регулярно блокируется самим DPI. Ждать таймаут на каждом
         // запросе — значит выглядеть как «интернет не работает вовсе», поэтому
@@ -125,7 +141,7 @@ class DnsResolver(
             } catch (e: Exception) {
                 DnsResult.Failed(e.message ?: "unknown")
             }
-            if (r !is DnsResult.Failed) return r
+            if (r !is DnsResult.Failed) return r to true
         }
         val primary = try {
             when (cfg.dnsMode) {
@@ -142,7 +158,7 @@ class DnsResolver(
         // откатываться на другой сервер здесь нельзя, иначе блок-лист не сработает.
         if (primary !is DnsResult.Failed) {
             if (secureMode) secureDnsFailures = 0
-            return primary
+            return primary to false
         }
         if (secureMode) {
             secureDnsFailures++
@@ -154,12 +170,12 @@ class DnsResolver(
                 )
             }
         }
-        if (cfg.dnsMode == DnsMode.SYSTEM) return primary
+        if (cfg.dnsMode == DnsMode.SYSTEM) return primary to false
 
         // Запасной путь. Без него любая авария DoH/DoT выглядела бы для
         // пользователя как «интернет не работает вовсе».
         val backup = systemServers() + FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
-        return try {
+        val r = try {
             val r = viaUdp(cfg, name, type, backup, "fallback")
             if (r is DnsResult.Failed) {
                 LogManager.w("DNS: $name не разрешилось ни через ${cfg.dnsMode}, ни через резерв (${r.reason})")
@@ -168,6 +184,7 @@ class DnsResolver(
         } catch (e2: Exception) {
             DnsResult.Failed(e2.message ?: "unknown")
         }
+        return r to true
     }
 
     /* ---------------------------------------------------------------- */

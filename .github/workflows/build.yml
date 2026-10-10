@@ -134,8 +134,17 @@ jobs:
             local attempt ok=0
             for attempt in 1 2 3; do
               echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              set +e
+              "$@" > "$log" 2>&1
+              local rc=$?
+              set -e
+              cat "$log"
+              if [ $rc -eq 0 ]; then ok=1; break; fi
+              # Каждая команда защищена `|| true`: под `bash -eo pipefail`
+              # непустой код grep сам по себе ронял шаг, и до печати причины
+              # падения дело не доходило — снаружи оставалось «что-то сломалось».
+              grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log" || true
+              if grep -qE "BUILD FAILED" "$log"; then break; fi
               echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
               pkill -f KotlinCompileDaemon || true
               pkill -f GradleDaemon || true
@@ -143,7 +152,11 @@ jobs:
             done
             return $((1 - ok))
           }
-          gradle_retry build-release.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease
+          gradle_retry build-release.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease || {
+            echo "=== сборка релиза упала, причины: ==="
+            grep -E '^e: |error:|^> Task .*FAILED|Execution failed' build-release.log || true
+            exit 1
+          }
 
       - name: Build debug APK
         id: debug
@@ -155,8 +168,14 @@ jobs:
             local attempt ok=0
             for attempt in 1 2 3; do
               echo "=== попытка $attempt · память: $(free -m | awk '/Mem:/ {print $2"MB всего, "$7"MB доступно"}') ===" | tee "$log"
-              if "$@" 2>&1 | tee -a "$log"; then ok=1; break; fi
-              if grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log"; then break; fi
+              set +e
+              "$@" > "$log" 2>&1
+              local rc=$?
+              set -e
+              cat "$log"
+              if [ $rc -eq 0 ]; then ok=1; break; fi
+              grep -qE "BUILD (SUCCESSFUL|FAILED)" "$log" || true
+              if grep -qE "BUILD FAILED" "$log"; then break; fi
               echo "=== попытка $attempt: сборщик умер без вердикта, повторяю ===" | tee -a "$log"
               pkill -f KotlinCompileDaemon || true
               pkill -f GradleDaemon || true
@@ -164,7 +183,11 @@ jobs:
             done
             return $((1 - ok))
           }
-          gradle_retry build-debug.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug
+          gradle_retry build-debug.log ./gradlew --no-daemon --max-workers=2 --stacktrace assembleDebug || {
+            echo "=== отладочная сборка упала, причины: ==="
+            grep -E '^e: |error:|^> Task .*FAILED|Execution failed' build-debug.log || true
+            exit 1
+          }
 
       # Логи сессии скачать извне бывает нельзя, поэтому ошибки компиляции и
       # тестов дублируются аннотациями checks API — они читаются через api.github.com.

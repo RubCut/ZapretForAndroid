@@ -57,14 +57,18 @@ jobs:
         run: |
           # Лог пишется в файл и дублируется в stdout: причина падения должна
           # быть видна в логе задачи, а не только в артефакте.
-          set -o pipefail
-          ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease 2>&1 \
-            | tee build-release.log || {
-              echo "=== сборка релиза упала, причины: ==="
-              grep -E '^e: |error:|^> Task .*FAILED|Caused by:|Execution failed' build-release.log \
-                | grep -v '^\s*at ' | head -60 || true
-              exit 1
-            }
+          #
+          # Блок ошибок отделён от конвейера намеренно: глобальный
+          # `bash -eo pipefail` иначе оборвал бы шаг на первом же
+          # непустом совпадении grep, не дав напечатать причину.
+          if ! ./gradlew --no-daemon --max-workers=2 --stacktrace assembleRelease \
+               > build-release.log 2>&1; then
+            cat build-release.log
+            echo "=== сборка релиза упала, причины: ==="
+            grep -E '^e: |error:|^> Task .*FAILED|Execution failed' build-release.log || true
+            exit 1
+          fi
+          tail -n 30 build-release.log
 
       - name: Verify signature
         run: |

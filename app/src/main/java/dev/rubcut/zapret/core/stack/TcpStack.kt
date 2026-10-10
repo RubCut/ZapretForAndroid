@@ -125,10 +125,9 @@ class TcpStack(
         }
     }.apply {
         allowCoreThreadTimeOut(true)
-        setRejectedExecutionHandler { runnable, _ ->
+        setRejectedExecutionHandler { _, _ ->
             LogManager.w(
-                LogTag.TCP,
-                "Пул потоков стека переполнен — задача отброшена, соединение не будет обработано"
+                "TCP: пул потоков стека переполнен — задача отброшена, соединение не будет обработано"
             )
         }
     }

@@ -66,7 +66,7 @@ class UdpStack(
     }.apply {
         allowCoreThreadTimeOut(true)
         setRejectedExecutionHandler { _, _ ->
-            LogManager.w(LogTag.UDP, "Пул потоков UDP переполнен — сессия не будет создана")
+            LogManager.w("UDP: пул потоков переполнен — сессия не будет создана")
         }
     }
     private val io: CoroutineDispatcher = executor.asCoroutineDispatcher()

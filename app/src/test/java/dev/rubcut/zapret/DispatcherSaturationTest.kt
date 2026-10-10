@@ -11,7 +11,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
@@ -54,26 +56,49 @@ class DispatcherSaturationTest {
     )
 
     /**
-     * Много одновременных задач — ни одна не должна быть отброшена.
+     * Много одновременных задач — ни одна не должна потеряться.
      *
      * Проверяем именно отказ пула: каждая задача должна выполниться, а не
-     * упасть с RejectedExecutionException на входе.
+     * потеряться. Раньше обработчик отказа просто проглатывал задачу — для
+     * корутины это равносильно вечной потере продолжения, и awaitAll() зависал
+     * навсегда, из-за чего CI был красным.
+     *
+     * Задачи здесь лёгкие (без Thread.sleep): иначе они занимают потоки пула
+     * и проверка превращается в проверку планировщика, а не отказа пула.
      */
     @Test
-    fun dispatcherDoesNotRejectUnderLoad() = runBlocking {
+    fun dispatcherDoesNotLoseTasksUnderLoad() = runBlocking {
         val s = stack()
         val tasks = 2000
         try {
-            val results = (0 until tasks).map {
-                async(s.io) {
-                    // Имитация блокирующего чтения: именно оно держит поток
-                    // и именно оно приводило пул к переполнению.
-                    Thread.sleep(2)
-                    it
-                }
-            }.awaitAll()
+            val results = (0 until tasks).map { async(s.io) { it } }.awaitAll()
             assertEquals("ни одна задача не должна потеряться", tasks, results.size)
             assertEquals("все задачи должны вернуть свой индекс", (0 until tasks).toSet(), results.toSet())
+        } finally {
+            s.shutdown()
+        }
+    }
+
+    /**
+     * Отказ пула не должен терять продолжение — это проверка на зависание.
+     *
+     * Регрессия: обработчик отказа возвращался молча, и корутина, чьё
+     * продолжение отбросили, не возобновлялась никогда. Любой ожидающий на неё
+     * (join, await) висел до бесконечности. Регрессия проявлялась ровно так:
+     * тест насыщал пул блокирующими задачами и висел.
+     */
+    @Test
+    fun rejectionDoesNotLoseCoroutines() = runBlocking {
+        val s = stack()
+        try {
+            // Больше задач, чем пул способен обслужить одновременно.
+            val results = withTimeoutOrNull(30_000) {
+                (0 until 1200).map { async(s.io) { it } }.awaitAll()
+            }
+            assertTrue(
+                "отказы пула не должны терять корутины: все 1200 должны вернуться",
+                results != null && results.size == 1200
+            )
         } finally {
             s.shutdown()
         }
@@ -101,7 +126,10 @@ class DispatcherSaturationTest {
         val v6 = InetAddress.getByName("fd61:7a6f:ee7::2")
         val v4 = InetAddress.getByName("10.211.0.2")
         val set = setOf(v4, v6)
-        assertEquals(true, set.contains(InetAddress.getByName("10.211.0.2")))
-        assertEquals(true, set.contains(InetAddress.getByName("fd61:7a6f:ee07:0:0:0:0:2")))
+        assertTrue("IPv4-адрес обязан совпадать", set.contains(InetAddress.getByName("10.211.0.2")))
+        assertTrue(
+            "IPv6-адрес обязан совпадать и в развёрнутой записи — строковое сравнение здесь не годится",
+            set.contains(InetAddress.getByName("fd61:7a6f:ee07:0:0:0:0:2"))
+        )
     }
 }

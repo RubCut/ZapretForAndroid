@@ -65,8 +65,11 @@ class UdpStack(
         Thread(r, "zapret-udp-${threadIndex.incrementAndGet()}").apply { isDaemon = true }
     }.apply {
         allowCoreThreadTimeOut(true)
-        setRejectedExecutionHandler { _, _ ->
-            LogManager.w("UDP: пул потоков переполнен — сессия не будет создана")
+        // Не проглатывать: задача — это продолжение корутины, и при молчаливом
+        // отказе оно просто не выполнится. См. пояснение в TcpStack.
+        setRejectedExecutionHandler { runnable, pool ->
+            LogManager.w("UDP: пул потоков переполнен (${pool.activeCount}), задача выполнится на текущем потоке")
+            runnable.run()
         }
     }
     private val io: CoroutineDispatcher = executor.asCoroutineDispatcher()

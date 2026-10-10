@@ -11,6 +11,10 @@ import java.util.UUID
 data class Strategy(
     val desync: DesyncMode = DesyncMode.MULTISPLIT,
     val splitPositions: List<SplitPos> = listOf(SplitPos.MIDSNI),
+    /** Значение байта срочных данных для [DesyncMode.OOB]. */
+    val urgentByte: Int = 0,
+    /** TTL пустышки для [DesyncMode.FAKE]; 0 — не подменять. */
+    val fakeTtl: Int = 0,
     val splitCustomPos: Int = 2,
     val splitDelayMs: Int = 2,
     val tlsrecParts: Int = 0,

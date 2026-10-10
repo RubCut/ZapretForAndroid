@@ -34,7 +34,21 @@ class DesyncPlan(
      */
     val poison: ByteArray? = null,
     /** Пауза между подставой и настоящими данными, мс. */
-    val poisonDelayMs: Int = 0
+    val poisonDelayMs: Int = 0,
+    /**
+     * Последний фрагмент уходит с байтом срочных данных.
+     *
+     * Отдельный признак, а не флаг в [writes]: на проводе это тот же байт
+     * данных плюс один байт, отправленный через `MSG_OOB`. Разбирать поток
+     * должен получить фрагменты без него.
+     */
+    val urgentByte: Int? = null,
+    /**
+     * Перед данными уходит пустышка с этим TTL.
+     *
+     * Ноль означает «не подменять»: значение 0 нельзя отличить от молчания.
+     */
+    val fakeTtl: Int = 0
 ) {
     val segmentCount: Int get() = writes.size
 
@@ -112,6 +126,39 @@ class DesyncEngine {
             else DesyncPlan.passthrough(payload, reason, host)
 
         if (s.desync == DesyncMode.NONE) return giveUp("off")
+
+        // 0) Приёмы на параметрах сокета — до всего остального: они не режут
+        // поток, а меняют то, как отдельный сегмент уходит в провод.
+        //
+        // OOB: к последнему фрагменту добавляется байт срочных данных, который
+        // на проводе есть, а в обычном потоке получателя — нет.
+        //
+        // FAKE: перед данными уходит пустышка с малым TTL. Она умирает на
+        // первом хопе, до сервера не доходит, но инлайновый фильтр её видит и
+        // разбирает — до настоящего ClientHello дело может не дойти.
+        if (s.desync == DesyncMode.OOB) {
+            val positions = collectPositions(s, data, hello, httpHostRange)
+                .filter { it in 1 until data.size }
+                .distinct()
+                .sorted()
+            val writes = splitAt(data, positions)
+            if (writes.size >= 2) {
+                return DesyncPlan(
+                    writes, true, "${lead}oob → ${writes.size} записей", host,
+                    poison, s.poisonDelayMs, urgentByte = s.urgentByte and 0xFF
+                )
+            }
+            return giveUp("нет точки разбиения для OOB")
+        }
+        if (s.desync == DesyncMode.FAKE) {
+            if (s.fakeTtl <= 0) return giveUp("не задан TTL пустышки")
+            // Пустышка — это первая часть настоящего ClientHello: её разбор
+            // фильтром сбивает поиск имени, а до сервера она не доходит.
+            return DesyncPlan(
+                listOf(data), true, "${lead}fake ttl=${s.fakeTtl}", host,
+                poison, s.poisonDelayMs, fakeTtl = s.fakeTtl
+            )
+        }
 
         // 1) Переупаковка TLS-записей — аналог --dpi-desync-tlsrec=N
         val wantsTlsRec = s.desync == DesyncMode.TLSREC || s.desync == DesyncMode.MULTISPLIT_TLSREC

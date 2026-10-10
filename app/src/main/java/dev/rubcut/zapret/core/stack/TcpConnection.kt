@@ -398,6 +398,14 @@ class TcpConnection(
 
         val plan = stack.engine.plan(payload, ctx, strategy)
 
+        // Приёмы, которым нужны параметры ядра, живут на дескрипторе самого
+        // сокета. Создаётся лениво — для обычных стратегий он не нужен вовсе.
+        val raw = if (plan.urgentByte != null || plan.fakeTtl > 0) {
+            runCatching { RawSocket(socket) }.getOrNull()
+        } else {
+            null
+        }
+
         // Подставная запись уходит отдельной записью ДО настоящих данных и с
         // паузой после: DPI должен успеть разобрать её и споткнуться, пока
         // настоящий ClientHello ещё не начал приходить. Без паузы замеры
@@ -410,11 +418,40 @@ class TcpConnection(
             if (plan.poisonDelayMs > 0) delay(plan.poisonDelayMs.toLong())
         }
 
+        // Пустышка с малым TTL уходит ПЕРВОЙ: она должна умереть на первом хопе,
+// до сервера не дойти, но инлайновый фильтр по пути её увидит. Настоящие
+// данные идут следом с обычным TTL, иначе соединение просто не доедет.
+        if (plan.fakeTtl > 0) {
+            val dummy = plan.writes.firstOrNull() ?: payload
+            val ok = raw != null && runCatching {
+                raw.setTtl(plan.fakeTtl)
+                out.write(dummy)
+                out.flush()
+                raw.resetTtl()
+            }.isSuccess
+            if (!ok) {
+                // Без управления TTL пустышка ушла бы как обычные данные и
+                // дошла до сервера. Лучше не отправлять вовсе, чем сломать
+                // рукопожатие, — приём просто не сработает.
+                LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
+            }
+            TrafficStats.up(dummy.size)
+            if (plan.poisonDelayMs > 0) delay(plan.poisonDelayMs.toLong())
+        }
+
         for ((index, write) in plan.writes.withIndex()) {
-            out.write(write)
-            out.flush()
-            TrafficStats.up(write.size)
-            if (index < plan.writes.size - 1 && strategy.splitDelayMs > 0) {
+            val isLast = index == plan.writes.size - 1
+            // Последний фрагмент уходит с байтом срочных данных: на проводе он
+            // есть, в обычном потоке получателя — нет, и из-за этого разбор
+            // имени сбивается. Если MSG_OOB не прошёл, пишем как обычные данные.
+            if (isLast && plan.urgentByte != null && raw?.sendWithUrgent(write, plan.urgentByte) == true) {
+                TrafficStats.up(write.size + 1)
+            } else {
+                out.write(write)
+                out.flush()
+                TrafficStats.up(write.size)
+            }
+            if (!isLast && strategy.splitDelayMs > 0) {
                 delay(strategy.splitDelayMs.toLong())
             }
         }
@@ -429,6 +466,9 @@ class TcpConnection(
             LogManager.d(LogTag.DPI, "пропуск ${plan.host ?: serverAddr.hostAddress}:$serverPort — ${plan.technique}")
         }
         stack.track(this, detectedHost, plan.technique, plan.applied)
+        // Дескриптор держит ссылку на сокет: без закрытия он переживёт соединение
+        // и утёкнет. Закрываем сразу — он нужен только на время отправки.
+        raw?.close()
     }
 
     private fun writePlain(out: java.io.OutputStream, payload: ByteArray) {

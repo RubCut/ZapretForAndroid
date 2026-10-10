@@ -67,6 +67,26 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 tlsrecParts = 2
             ),
 
+            // Приёмы, которые работают там, где разбиение не помогает: байт
+            // срочных данных и пустышка с малым TTL. В замерах чужого
+            // приложения «OOB по слову» проходил 18/18, а пустышки с TTL были
+            // среди вариантов ByeDPI 19/28. Оба требуют доступа к параметрам
+            // ядра, получены у обычного сокета через android.system.Os —
+            // root для этого не нужен.
+            "oob · байт срочных данных" to Strategy(
+                desync = DesyncMode.OOB,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                urgentByte = 0
+            ),
+
+            "fake · пустышка ttl=8" to Strategy(
+                desync = DesyncMode.FAKE,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                fakeTtl = 8
+            ),
+
             // Смена регистра в имени хоста: обходит фильтры, которые полностью
             // пересобирают сегменты, где разбиение не помогает вовсе. На других
             // сетях это единственная рабочая стратегия, поэтому из подбора её

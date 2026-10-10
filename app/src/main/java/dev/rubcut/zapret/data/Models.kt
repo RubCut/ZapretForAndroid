@@ -17,7 +17,22 @@ enum class DesyncMode(val token: String) {
     MULTISPLIT("multisplit"),
     TLSREC("tlsrec"),
     MULTISPLIT_TLSREC("multisplit+tlsrec"),
-    HOSTFAKESPLIT("hostfakesplit");
+    HOSTFAKESPLIT("hostfakesplit"),
+    /**
+     * Байт срочных данных после сегмента, аналог `--dpi-desync-oob`.
+     *
+     * Отличается от разбиения тем, что лишний байт уходит с флагом срочности
+     * и в обычный поток получателя не попадает, хотя на проводе он есть.
+     */
+    OOB("oob"),
+    /**
+     * Пустышка с малым TTL перед настоящими данными, аналог `--dpi-desync-fake`.
+     *
+     * Пакет умирает на первом же хопе: сервер его не видит, а инлайновый
+     * фильтр по пути — да. Требует управления TTL, доступного через
+     * [dev.rubcut.zapret.core.stack.RawSocket] без root.
+     */
+    FAKE("fake");
 
     companion object {
         fun fromToken(token: String?): DesyncMode =

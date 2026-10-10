@@ -139,7 +139,15 @@ class DesyncEngine {
                 // длину добавленной записи, старые смещения больше не годятся.
                 val hello2 = Tls.parseClientHello(repacked, 0, repacked.size)
                 val bounds = Tls.recordBoundaries(repacked, 0, repacked.size)
-                val positions = (bounds + collectPositions(s, repacked, hello2, null))
+                // Граница, созданная нашим резом, уже рвёт поток в этом месте.
+                // Пересчитанные после вставки заголовка точки лежат на длину
+                // заголовка дальше (M+5 вместо M) — это артефакт пересчёта, а не
+                // воля настроек. Без вычета получается лишний 5-байтовый сегмент
+                // из одного заголовка записи, которого у победившего варианта
+                // `--tlsrec=0+wm --split=0+wm` (ровно 2 сегмента) нет.
+                val split = collectPositions(s, repacked, hello2, null)
+                    .filterNot { p -> cutAt != null && p > cutAt && p - cutAt <= Tls.RECORD_HEADER }
+                val positions = (bounds + split)
                     .filter { it in 1 until repacked.size }
                     .distinct()
                     .sorted()

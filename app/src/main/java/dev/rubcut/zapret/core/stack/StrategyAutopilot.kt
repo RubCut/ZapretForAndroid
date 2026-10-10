@@ -334,7 +334,12 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 val ip = parseIp(p, p.size) ?: return@receive false
                 val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return@receive false
                 seg.isSynAck && seg.dstPort == clientPort
-            } ?: return@withTimeoutOrNull false
+            } ?: run {
+                // Молчание на этом этапе — не DPI, а мёртвый IP или сеть:
+                // до отправки ClientHello дело вообще не дошло.
+                LogManager.d(LogTag.DPI, "зонд $host:${port} «${strategyLabel(strategy)}» → нет SYN-ACK за 4 с")
+                return@withTimeoutOrNull false
+            }
             val saIp = parseIp(synAck, synAck.size)!!
             val sa = parseTcp(synAck, saIp.payloadOffset, saIp.payloadLength)!!
             val serverIsn = sa.seq
@@ -352,7 +357,12 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 val ip = parseIp(p, p.size) ?: return@receive false
                 val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return@receive false
                 seg.dstPort == clientPort && !seg.isSynAck && seg.payloadLength > 0
-            } ?: return@withTimeoutOrNull false
+            } ?: run {
+                // SYN-ACK был, а ответа на ClientHello нет — вот это уже
+                // почерк DPI: рукопожатие дошло до сервера, дальше тишина.
+                LogManager.d(LogTag.DPI, "зонд $host:${port} «${strategyLabel(strategy)}» → SYN-ACK есть, ответа на ClientHello нет")
+                return@withTimeoutOrNull false
+            }
 
             val ip = parseIp(down, down.size)!!
             val seg = parseTcp(down, ip.payloadOffset, ip.payloadLength)!!

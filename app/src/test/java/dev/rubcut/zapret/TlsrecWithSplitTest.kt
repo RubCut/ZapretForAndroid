@@ -150,4 +150,42 @@ class TlsrecWithSplitTest {
             Tls.parseClientHello(rebuilt, 0, rebuilt.size)?.sni
         )
     }
+
+    /**
+     * Профильная стратегия обязана давать ровно тот образ, что у победителя
+     * `--tlsrec=0+wm --split=0+wm`: два сегмента, каждый начинается с заголовка
+     * TLS-записи, разрыв ровно на границе записей.
+     *
+     * Регрессия: пересчёт MIDSNI после вставки заголовка давал точку M+5 вместо
+     * M, и поток рвался трижды — посередине ехал одинокий 5-байтовый заголовок
+     * второй записи. Байтовый поток тот же, а сегментация уже не та, что
+     * проходила фильтр.
+     */
+    @Test
+    fun profileStrategyEmitsExactlyTwoRecordAlignedSegments() {
+        val hello = StrategyAutopilotHelloFactory.build("www.youtube.com")
+        val plan = engine.plan(
+            hello, FlowContext(443, null, false),
+            Strategy(
+                desync = DesyncMode.MULTISPLIT_TLSREC,
+                tlsrecParts = 2,
+                splitPositions = listOf(SplitPos.MIDSNI)
+            )
+        )
+        assertTrue("стратегия обязана применяться", plan.applied)
+        assertEquals(
+            "ожидались ровно 2 сегмента (граница записей), получено ${plan.writes.size}",
+            2, plan.writes.size
+        )
+        for ((i, w) in plan.writes.withIndex()) {
+            assertEquals(
+                "сегмент $i обязан начинаться с заголовка TLS-записи (0x16)",
+                0x16, w[0].toInt() and 0xFF
+            )
+        }
+        assertEquals(
+            "длина потока не должна меняться",
+            hello.size, plan.writes.sumOf { it.size }
+        )
+    }
 }

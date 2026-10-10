@@ -239,7 +239,9 @@ class StrategyAutopilot(private val stack: TcpStack) {
         strategy: Strategy,
         timeoutMs: Long = 6000
     ): Boolean = withTimeoutOrNull(timeoutMs) {
-        val clientPort = portCounter.incrementAndGet() and 0xFFFF
+        // Эфемерные порты, а не весь диапазон: младшие (<1024) привилегированы,
+        // а 0 и вовсе недопустим как порт источника.
+        val clientPort = 32768 + (portCounter.incrementAndGet() % 28232)
         val clientIsn = Random.nextInt()
         val captured = Channel<ByteArray>(Channel.UNLIMITED)
         val tap: (ByteArray) -> Unit = { p -> captured.trySend(p) }

@@ -301,12 +301,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (result == null) {
                     autopilotResult.value = app.getString(R.string.autopilot_fail)
                 } else {
+                    // Сохраняем стратегию целиком: усечение до 4 полей молча
+                    // выбрасывало sniCaseMix/poison/wssize — победивший приём
+                    // не применялся бы, и следующий автоподбор находил бы то же самое.
                     update {
                         it.copy(
                             desync = result.strategy.desync,
                             splitPositions = result.strategy.splitPositions,
+                            splitCustomPos = result.strategy.splitCustomPos,
                             splitDelayMs = result.strategy.splitDelayMs,
-                            tlsrecParts = result.strategy.tlsrecParts
+                            cutoffChunks = result.strategy.cutoffChunks,
+                            tlsrecParts = result.strategy.tlsrecParts,
+                            wssizeEnabled = result.strategy.wssizeEnabled,
+                            wssizePackets = result.strategy.wssizePackets,
+                            wssizeWindow = result.strategy.wssizeWindow,
+                            anyProtocol = result.strategy.anyProtocol,
+                            sniCaseMix = result.strategy.sniCaseMix,
+                            poisonEnabled = result.strategy.poisonEnabled,
+                            poisonSni = result.strategy.poisonSni,
+                            poisonDelayMs = result.strategy.poisonDelayMs
                         )
                     }
                     autopilotResult.value = app.getString(R.string.autopilot_done, result.name)

@@ -130,14 +130,19 @@ class DesyncEngine {
             }
         }
 
-        // 2) hostfakesplit для plaintext HTTP — режем значение заголовка Host
+        // 2) hostfakesplit для plaintext HTTP — режем значение заголовка Host.
+        // Разбиваем уже изменённые данные (со сменой регистра), иначе приём
+        // молча терялся бы на HTTP-правилах с sniCaseMix.
         if (s.desync == DesyncMode.HOSTFAKESPLIT && isHttp && httpHostRange != null) {
             val vs = httpHostRange.first
             val ve = httpHostRange.second
             val positions = linkedSetOf(1, vs, vs + (ve - vs) / 2, ve)
-            val writes = splitAt(payload, positions.filter { it in 1 until payload.size }.sorted())
+            val writes = splitAt(data, positions.filter { it in 1 until data.size }.sorted())
             if (writes.size >= 2) {
-                return DesyncPlan(writes, true, "hostfakesplit Host=${host ?: "?"}", host)
+                return DesyncPlan(
+                    writes, true, "${lead}hostfakesplit Host=${host ?: "?"}", host,
+                    poison, s.poisonDelayMs
+                )
             }
         }
 
@@ -155,7 +160,7 @@ class DesyncEngine {
         val ordered = orderedPositions(s, positions, hello)
 
         val single = s.desync == DesyncMode.SPLIT || s.desync == DesyncMode.TLSREC
-        val chosen = if (single) listOf(ordered.last()) else ordered
+        val chosen = if (single) listOf(ordered.max()) else ordered
         val writes = splitAt(data, chosen)
         if (writes.size < 2) return giveUp("разбиение не удалось")
 
@@ -209,8 +214,8 @@ class DesyncEngine {
      *
      * `split` берёт ОДНУ точку, и выбирать её надо осмысленно: точка возле начала
      * ClientHello отрезает пустой префикс, после чего весь hello уходит вторым
-     * сегментом целиком. Поэтому для `split` берётся последняя точка — та, что
-     * стоит внутри имени хоста.
+     * сегментом целиком. Поэтому для `split` берётся самая глубокая точка —
+     * та, что стоит внутри имени хоста, — независимо от порядка в списке.
      *
      * Дубликаты (например `FIRST` и `custom=1`) схлопываются в одну точку.
      */

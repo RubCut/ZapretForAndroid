@@ -89,7 +89,11 @@ class UdpStack(
             UdpMode.BLOCK_FILTERED -> {
                 val host = ReverseHostCache.get(ip.dst)
                 val decision = resolver.resolveUdp(port, host, ip.dst)
-                if (!decision.strategy.isPassive) {
+                // Для UDP значимы только десинхронизация и wssize: смена регистра
+                // и отравление — приёмы TCP-уровня, из-за них релей рвать нельзя.
+                val blocksUdp = decision.strategy.desync != dev.rubcut.zapret.data.DesyncMode.NONE ||
+                    decision.strategy.wssizeEnabled
+                if (blocksUdp) {
                     TrafficStats.dropped()
                     LogManager.d(LogTag.UDP, "UDP/$port заблокирован фильтром (${decision.reason})")
                     return true

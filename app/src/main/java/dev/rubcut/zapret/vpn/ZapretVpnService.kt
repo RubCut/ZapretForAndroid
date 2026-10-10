@@ -794,8 +794,18 @@ class ZapretVpnService : VpnService() {
                     it.copy(
                         desync = result.strategy.desync,
                         splitPositions = result.strategy.splitPositions,
+                        splitCustomPos = result.strategy.splitCustomPos,
                         splitDelayMs = result.strategy.splitDelayMs,
-                        tlsrecParts = result.strategy.tlsrecParts
+                        cutoffChunks = result.strategy.cutoffChunks,
+                        tlsrecParts = result.strategy.tlsrecParts,
+                        wssizeEnabled = result.strategy.wssizeEnabled,
+                        wssizePackets = result.strategy.wssizePackets,
+                        wssizeWindow = result.strategy.wssizeWindow,
+                        anyProtocol = result.strategy.anyProtocol,
+                        sniCaseMix = result.strategy.sniCaseMix,
+                        poisonEnabled = result.strategy.poisonEnabled,
+                        poisonSni = result.strategy.poisonSni,
+                        poisonDelayMs = result.strategy.poisonDelayMs
                     )
                 }
             } catch (e: Exception) {

@@ -43,6 +43,9 @@ class BootReceiver : BroadcastReceiver() {
         val pending = goAsync()
         AppGraph.scope.launch {
             try {
+                // DataStore читается асинхронно: без ensureLoaded() здесь лежал бы
+                // заводской профиль (autoStart=false) и автозапуск не срабатывал бы.
+                AppGraph.config.ensureLoaded()
                 val cfg = AppGraph.config.current
                 if (!cfg.autoStart) {
                     LogManager.d(LogTag.APP, "Boot: автозапуск выключен")

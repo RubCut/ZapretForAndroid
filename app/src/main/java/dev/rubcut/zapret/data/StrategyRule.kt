@@ -56,7 +56,8 @@ data class Strategy(
      */
     val sniCaseMix: Boolean = false
 ) {
-    val isPassive: Boolean get() = desync == DesyncMode.NONE && !wssizeEnabled
+    val isPassive: Boolean get() = desync == DesyncMode.NONE && !wssizeEnabled &&
+        !sniCaseMix && !poisonEnabled
 
     fun toJson(): JSONObject {
         val o = JSONObject()

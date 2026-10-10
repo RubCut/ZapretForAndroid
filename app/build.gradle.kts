@@ -152,4 +152,11 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation("junit:junit:4.13.2")
+    // Настоящая реализация org.json вместо заглушки из android.jar.
+    //
+    // В юнит-тестах android.jar — это mockable-jar: с `returnDefaultValues`
+    // JSONObject.put() ничего не делает, а optString() возвращает null. Из-за
+    // этого любой тест на сохранение/загрузку конфигурации через JSON падал
+    // с NPE, и код сериализации нельзя было проверить вообще.
+    testImplementation("org.json:json:20240303")
 }

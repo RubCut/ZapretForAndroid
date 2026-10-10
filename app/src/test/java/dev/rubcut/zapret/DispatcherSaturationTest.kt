@@ -13,6 +13,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -120,15 +121,31 @@ class DispatcherSaturationTest {
         assertEquals(0, s.activeCount)
     }
 
-    /** Стек не должен делить адреса виртуального DNS по строкам — см. IPv6-разбор. */
+    /**
+     * Виртуальные адреса DNS обязаны совпадать по [InetAddress], а не по строке.
+     *
+     * Регрессия, найденная при чтении кода: сравнение `hostAddress` для IPv6
+     * не годится — Java печатает адрес развёрнутым, поэтому литерал из
+     * константы никогда не совпадал, и перенаправление TCP-DNS на двухстёковых
+     * сетях не срабатывало.
+     *
+     * Важно: `ee7` — это `0x0ee7`, а НЕ `0xee07`. Развёрнутая форма адреса —
+     * `fd61:7a6f:0ee7:0:0:0:0:2`; вариант с `ee07` обозначает другой адрес и
+     * корректно не совпадает.
+     */
     @Test
     fun virtualDnsIsMatchedByAddress() {
-        val v6 = InetAddress.getByName("fd61:7a6f:ee7::2")
-        val v4 = InetAddress.getByName("10.211.0.2")
-        val set = setOf(v4, v6)
+        val set = setOf(
+            InetAddress.getByName("10.211.0.2"),
+            InetAddress.getByName("fd61:7a6f:ee7::2")
+        )
         assertTrue("IPv4-адрес обязан совпадать", set.contains(InetAddress.getByName("10.211.0.2")))
         assertTrue(
-            "IPv6-адрес обязан совпадать и в развёрнутой записи — строковое сравнение здесь не годится",
+            "развёрнутая запись IPv6 обязана совпадать: 0x0ee7, а не 0xee07",
+            set.contains(InetAddress.getByName("fd61:7a6f:0ee7:0:0:0:0:2"))
+        )
+        assertFalse(
+            "совпадение обязано быть настоящим, а не сравнением по подстроке",
             set.contains(InetAddress.getByName("fd61:7a6f:ee07:0:0:0:0:2"))
         )
     }

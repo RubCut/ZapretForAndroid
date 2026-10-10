@@ -131,14 +131,17 @@ class TunedStrategyApplicationTest {
         assertEquals("www.youtube.com", generated.inlineDomains)
 
         val resolver = resolverFor(cfg)
-        assertEquals(
+        assertTrue(
             "для самого хоста должно применяться сгенерированное правило",
-            true, resolver.resolveTcp(443, "www.youtube.com", InetAddress.getByName("142.250.74.206")).rule?.isGenerated
+            resolver.resolveTcp(443, "www.youtube.com", InetAddress.getByName("142.250.74.206"))
+                .rule?.isGenerated == true
         )
-        assertEquals(
+        // Правила может не быть вовсе: тогда решение приходит из общих фильтров.
+        // Важно, чтобы оно не оказалось сгенерированным.
+        assertTrue(
             "для постороннего хоста сгенерированное правило применяться не должно",
-            false,
-            resolver.resolveTcp(443, "example.com", InetAddress.getByName("8.6.112.5")).rule?.isGenerated
+            resolver.resolveTcp(443, "example.com", InetAddress.getByName("8.6.112.5"))
+                .rule?.isGenerated != true
         )
     }
 

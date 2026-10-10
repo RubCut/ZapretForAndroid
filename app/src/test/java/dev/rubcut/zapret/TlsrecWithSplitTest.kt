@@ -84,7 +84,7 @@ class TlsrecWithSplitTest {
     @Test
     fun repackRecordAtCutsAtTheExactOffset() {
         val hello = StrategyAutopilotHelloFactory.build("www.youtube.com")
-        val recLen = Tls.recordTotalLength(hello, 0)
+        val recLen = Tls.recordTotalLength(hello, 0, hello.size)
         assertTrue("в тесте нужен корректный ClientHello", recLen > 0)
         val bodyLen = recLen - Tls.RECORD_HEADER
         val at = Tls.RECORD_HEADER + bodyLen / 3
@@ -106,7 +106,7 @@ class TlsrecWithSplitTest {
     @Test
     fun repackRecordAtPreservesBody() {
         val hello = StrategyAutopilotHelloFactory.build("rr1---sn-gxuo03g-ig3s.googlevideo.com")
-        val recLen = Tls.recordTotalLength(hello, 0)
+        val recLen = Tls.recordTotalLength(hello, 0, hello.size)
         assertTrue("в тесте нужен корректный ClientHello", recLen > 0)
         val at = Tls.RECORD_HEADER + (recLen - Tls.RECORD_HEADER) / 2
 

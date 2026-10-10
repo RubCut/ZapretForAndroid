@@ -60,14 +60,18 @@ class PresetCoverageTest {
                 d.strategy.isPassive
             )
             assertEquals(
-                "для $host ожидалась стратегия с разбиением потока (multisplit либо " +
-                    "multisplit+tlsrec), а пришло «${d.strategy.describe()}»",
-                true,
-                d.strategy.desync == DesyncMode.MULTISPLIT ||
-                    d.strategy.desync == DesyncMode.MULTISPLIT_TLSREC
+                "для $host ожидалась стратегия tlsrec+разбиение, а пришло «${d.strategy.describe()}»",
+                DesyncMode.MULTISPLIT_TLSREC, d.strategy.desync
             )
+            // Точка реза — середина домена (0+wm), разрыва по первому байту
+            // в победившем варианте нет: по замерам стороннего приложения
+            // вариант «tlsrec + первый байт» проверку не прошёл.
             assertTrue(
-                "разрыв по первому байту обязателен, а пришло «${d.strategy.describe()}»",
+                "рез в середине домена обязателен, а пришло «${d.strategy.describe()}»",
+                d.strategy.splitPositions.contains(SplitPos.MIDSNI)
+            )
+            assertFalse(
+                "разрыва по первому байту быть не должно, а пришло «${d.strategy.describe()}»",
                 d.strategy.splitPositions.contains(SplitPos.FIRST)
             )
         }

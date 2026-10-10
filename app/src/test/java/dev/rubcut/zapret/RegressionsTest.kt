@@ -259,11 +259,14 @@ class RegressionsTest {
             val len = getU16(b, p + 2)
             p += 4
             if (p + len > b.size) break
-            if (type == 0x002B && len >= 2) {
-                val listLen = getU16(b, p)
-                versions = (0 until listLen step 2)
-                    .take((listLen + 1) / 2)
-                    .map { getU16(b, p + 2 + it) }
+            if (type == 0x002B && len >= 1) {
+                // RFC 8446: длина списка — ОДИН байт, затем версии по 2 байта.
+                // (Раньше ветка не исполнялась — расширения не было, и u16
+                // здесь читал мусор за концом.)
+                val listLen = b[p].toInt() and 0xFF
+                val usable = minOf(listLen, len - 1)
+                versions = (0 until usable step 2)
+                    .map { getU16(b, p + 1 + it) }
             }
             p += len
         }

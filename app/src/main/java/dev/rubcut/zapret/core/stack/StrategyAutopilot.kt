@@ -182,6 +182,35 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     for (s in sigs) putU16Buf(b, s)
                     b.toByteArray()
                 }
+                // ALPN: h2 + http/1.1. Его отсутствие выдаёт синтетику — 99%
+                // реальных клиентов его шлют. Фильтр с отпечатками (JA3) режет
+                // такие hello молча, и автоподбор тогда видит «не работает
+                // ничего», хотя настоящему трафику отвечает.
+                writeExt(ext, 0x0010) {
+                    val inner = ByteArrayOutputStream()
+                    for (p in listOf("h2", "http/1.1")) {
+                        val pb = p.toByteArray(Charsets.US_ASCII)
+                        inner.write(pb.size)
+                        inner.write(pb)
+                    }
+                    val ib = inner.toByteArray()
+                    val b = ByteArrayOutputStream()
+                    putU16Buf(b, ib.size)
+                    b.write(ib)
+                    b.toByteArray()
+                }
+                // supported_versions: TLS 1.3 + 1.2. Шифры только из 1.2,
+                // поэтому сервер выберет 1.2 — противоречия нет, а отпечаток
+                // как у браузера.
+                writeExt(ext, 0x002B) {
+                    val b = ByteArrayOutputStream()
+                    b.write(4)
+                    putU16Buf(b, 0x0304)
+                    putU16Buf(b, 0x0303)
+                    b.toByteArray()
+                }
+                // GREASE: «мусорное» расширение нулевой длины, как у Chrome.
+                writeExt(ext, 0x0A0A) { ByteArray(0) }
 
                 val body = ByteArrayOutputStream()
                 body.write(3); body.write(3)                                // legacy_version = TLS 1.2
@@ -353,7 +382,13 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 )
             )
 
-            val down = receive(captured, timeoutMs) { p ->
+            // Внутренний таймаут приёма ОБЯЗАН быть короче внешнего: при глухом
+            // фильтре (SYN-ACK есть, ответа нет) иначе первым срабатывает
+            // внешний withTimeoutOrNull, и зонд умирает молча — строка
+            // диагностики ниже недостижима в принципе. Именно так пропали все
+            // строки зонда из журналов: каждый кандидат упирался в стену 6 с.
+            // Запас 2 с — на установку соединения и отправку hello.
+            val down = receive(captured, (timeoutMs - 2000).coerceAtLeast(2000)) { p ->
                 val ip = parseIp(p, p.size) ?: return@receive false
                 val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return@receive false
                 seg.dstPort == clientPort && !seg.isSynAck && seg.payloadLength > 0

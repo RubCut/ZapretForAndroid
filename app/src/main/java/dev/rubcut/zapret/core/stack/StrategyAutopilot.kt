@@ -310,16 +310,19 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     putU16Buf(b, 0x0303)
                     b.toByteArray()
                 }
-                // key_share: X25519 с 32-байтным публичным ключом. Без него
-                // hello, объявляющего TLS 1.3, выглядит синтетикой — многие
-                // фильтры (JA3/эвристика) дропают такие молча, без alert.
-                // Зонды получают «тишину после SYN-ACK» и не находят победителя.
+                // key_share: X25519 с НАСТОЯЩИМ публичным ключом. Расширение нужно, чтобы
+                // hello не выглядело синтетикой (его дропают по отпечатку), но
+                // ключ обязан быть настоящим: сервер, выбравший TLS 1.3,
+                // проверяет точку на кривой. Подставные байты давали alert вместо
+                // ServerHello — зонд не получал 0x16 ни при какой стратегии.
+                // Настоящий ключ берём у JDK (XDH/X25519), fallback — basepoint.
                 writeExt(ext, 0x0033) {
+                    val pub = x25519PublicKey()
                     val b = ByteArrayOutputStream()
-                    putU16Buf(b, 2 + 2 + 32)                               // длина списка
+                    putU16Buf(b, 2 + 2 + pub.size)                          // длина списка
                     putU16Buf(b, 0x001D)                                   // X25519
-                    putU16Buf(b, 32)                                       // длина ключа
-                    b.write(ByteArray(32) { (it * 7 + 13).toByte() })       // публичный ключ
+                    putU16Buf(b, pub.size)                                 // длина ключа
+                    b.write(pub)
                     b.toByteArray()
                 }
                 // psk_key_exchange_modes: обязателен при TLS 1.3
@@ -382,6 +385,31 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 out.write((v ushr 8) and 0xFF)
                 out.write(v and 0xFF)
             }
+
+        /**
+         * Настоящий публичный ключ X25519 для `key_share`.
+         *
+         * Подставные байты здесь недопустимы: сервер, выбравший TLS 1.3,
+         * проверяет, что точка лежит на кривой, и отвечает alert вместо
+         * ServerHello. Из-за этого зонд не получал ни одного 0x16 ни при какой
+         * стратегии, и автоподбор объявлял победителем первую же сработавшую
+         * «по сети», а на деле не отличал приёмы.
+         *
+         * Ключ нужен только для вида hello — рукопожатие всё равно не
+         * завершается (мы закрываемся после ServerHello), поэтому приватная
+         * часть не хранится.
+         */
+        fun x25519PublicKey(): ByteArray = try {
+            val kpg = java.security.KeyPairGenerator.getInstance("X25519")
+            kpg.generateKeyPair().public.encoded.let { enc ->
+                // X.509 SubjectPublicKeyInfo: последние 32 байта — сам ключ.
+                if (enc.size > 32) enc.copyOfRange(enc.size - 32, enc.size) else enc
+            }
+        } catch (_: Exception) {
+            // Fallback: базовая точка X25519 (u=9). Она валидна по кривой,
+            // поэтому сервер примет ключ, даже если генератор недоступен.
+            byteArrayOf(9) + ByteArray(31)
+        }
     }
 
     /**
@@ -613,13 +641,29 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 0x15 -> Verdict.ALERT
                 else -> Verdict.GARBAGE
             }
+            // У alert разбираем КОД: без него «сервер отверг» — пустая фраза,
+            // а именно код объясняет причину. 48 (unknown_ca) — про то, что мы
+            // говорим не с тем сервером или подставили имя; 40
+            // (handshake_failure) — про сам ClientHello; 47 — про сертификат
+            // у стороны сервера (нас не касается).
+            val alertCode = if (first == 0x15 && down.size - (ip.payloadOffset + seg.headerLen) >= 6) {
+                val base = ip.payloadOffset + seg.headerLen
+                // alert: [0]=0x15 [1]=level [2..3]=длина [4]=описание [5]=код
+                (down[base + 4].toInt() and 0xFF) to (down[base + 5].toInt() and 0xFF)
+            } else {
+                null
+            }
+            val alertText = alertCode?.let { (level, code) ->
+                "alert ${alertName(level, code)}"
+            } ?: ""
             LogManager.d(
                 LogTag.DPI,
-                "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → ответ 0x%02x (%s)".format(
+                "зонд $host:${port} [${addr.hostAddress}] «${strategyLabel(strategy)}» → ответ 0x%02x%s (%s)".format(
                     first,
+                    alertText,
                     when (result) {
                         Verdict.HELLO -> "ServerHello"
-                        Verdict.ALERT -> "alert, сервер отверг рукопожатие"
+                        Verdict.ALERT -> "сервер ответил alert${if (alertText.isNotEmpty()) "" else ", код не разобран"}"
                         else -> "не TLS, перед нами не тот сервер"
                     }
                 )
@@ -679,6 +723,47 @@ private suspend fun probeRecon(
         else -> "адрес $ip молчит на любом SNI — похоже на блокировку по адресу или сети"
     }
     return "$ownText, чужой SNI → $otherText [$ip] ($conclusion)" to ownText
+}
+
+/**
+ * Имя alert по RFC 8446 §6.2.
+ *
+ * Нужно, чтобы журнал отвечал на вопрос «почему сервер отверг», а не просто
+ * констатировал факт. Самая полезная строка здесь — 48 `unknown_ca`: значит мы
+ * обращаемся не к тому серверу (или подставили SNI), и перебор стратегий тут
+ * бесполезен — это не вопрос приёмов.
+ */
+private fun alertName(level: Int, code: Int): String {
+    val names = mapOf(
+        0 to "close_notify",
+        10 to "unexpected_message",
+        20 to "bad_record_mac",
+        21 to "decryption_failed",
+        22 to "record_overflow",
+        30 to "decompression_failure",
+        40 to "handshake_failure",
+        41 to "no_certificate",
+        42 to "bad_certificate",
+        43 to "unsupported_certificate",
+        44 to "certificate_revoked",
+        45 to "certificate_expired",
+        46 to "certificate_unknown",
+        47 to "illegal_parameter",
+        48 to "unknown_ca",
+        49 to "access_denied",
+        50 to "decode_error",
+        51 to "decrypt_error",
+        70 to "protocol_version",
+        71 to "insufficient_security",
+        80 to "internal_error",
+        86 to "inappropriate_fallback",
+        90 to "user_canceled",
+        109 to "missing_extension",
+        112 to "unrecognized_name",
+        120 to "no_application_protocol"
+    )
+    val n = names[code] ?: "код $code"
+    return if (level == 2) "warning($n)" else "fatal($n)"
 }
 
 private fun describeVerdict(v: Verdict): String = when (v) {

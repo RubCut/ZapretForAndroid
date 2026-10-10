@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -133,6 +134,35 @@ class RegressionsTest {
         // верный признак синтетики для отпечатков (JA3).
         val random = parsed.random
         assertTrue("random не должен быть однородным", random.toSet().size > 8)
+    }
+
+    /**
+     * `key_share` обязан содержать НАСТОЯЩИЙ публичный ключ X25519.
+     *
+     * Наблюдение с устройства: при подставных байтах сервер, выбравший TLS 1.3,
+     * проверял точку на кривой и отвечал alert вместо ServerHello. Зонд не
+     * получал 0x16 НИ ПРИ КАКОЙ СТРАТЕГИИ — автоподбор в итоге объявлял
+     * победителем первую кандидатуру, которая не упала, хотя различать приёмы
+     * он по сути не мог.
+     *
+     * Проверка отличает настоящий ключ от fallback'а: базовая точка X25519
+     * (u=9) в 32 байтах — это 09 00…00, то есть однородный хвост из нулей.
+     */
+    @Test
+    fun probeClientHelloCarriesValidX25519Key() {
+        val key = StrategyAutopilot.x25519PublicKey()
+        assertEquals("ключ X25519 обязан быть 32 байта", 32, key.size)
+        assertFalse(
+            "ключ не должен быть базовой точкой (значит это fallback, а не настоящий)",
+            key[0] == 9.toByte() && key.drop(1).all { it == 0.toByte() }
+        )
+        assertTrue("ключ обязан быть неоднородным", key.toSet().size > 4)
+
+        val hello = StrategyAutopilot.clientHelloFor("www.youtube.com")
+        assertTrue(
+            "key_share обязан присутствовать в hello, иначе сервер с TLS 1.3 ответит HelloRetryRequest",
+            0x0033 in (parseClientHello(hello)?.extensionTypes ?: emptySet())
+        )
     }
 
     /* ================================================================== */

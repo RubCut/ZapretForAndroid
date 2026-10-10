@@ -65,10 +65,13 @@ class RawSocket(private val socket: Socket) : AutoCloseable {
             ttlTouched = ttl != DEFAULT_TTL
             true
         } catch (e: ErrnoException) {
-            LogManager.d(LogTag.TCP, "Не удалось задать TTL $ttl: ${e.message}")
+            // Errno-код обязателен: без него «TTL недоступен» не отличить от
+            // «отказано ядром». На части прошивок Android подмена TTL=1
+            // возвращает EPERM, и disorder молча вырождается в обычный разрез.
+            LogManager.d(LogTag.TCP, "setsockopt TTL=$ttl отклонён: errno=${e.errno} (${e.message})")
             false
         } catch (e: Exception) {
-            LogManager.d(LogTag.TCP, "TTL недоступен: ${e.message}")
+            LogManager.d(LogTag.TCP, "TTL=$ttl недоступен: ${e.message}")
             false
         }
     }

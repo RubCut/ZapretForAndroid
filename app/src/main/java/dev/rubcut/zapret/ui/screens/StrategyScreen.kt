@@ -149,6 +149,7 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
             item {
                 val apRunning by vm.autopilotRunning.collectAsStateWithLifecycle()
                 val apResult by vm.autopilotResult.collectAsStateWithLifecycle()
+                val apProgress by vm.autopilotProgress.collectAsStateWithLifecycle()
                 SectionCard(title = stringResource(R.string.autopilot_title), icon = Icons.Rounded.Speed) {
                     Text(
                         stringResource(R.string.autopilot_hint),
@@ -162,6 +163,16 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(if (apRunning) stringResource(R.string.autopilot_running) else stringResource(R.string.autopilot_start))
+                    }
+                    // Живой прогресс: подбор занимает минуты, и без этой строки
+                    // экран выглядит зависшим на все время проверки.
+                    if (apRunning && apProgress != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            apProgress!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                     if (apResult != null) {
                         Spacer(Modifier.height(8.dp))

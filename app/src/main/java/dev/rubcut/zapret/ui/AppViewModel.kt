@@ -62,6 +62,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val autopilotRunning = MutableStateFlow(false)
     val autopilotResult = MutableStateFlow<String?>(null)
 
+    /**
+     * Живой прогресс подбора: какой хост и какой кандидат проверяются сейчас.
+     *
+     * Подбор идёт до 12 кандидатов на каждый хост с таймаутом 6 с, и без этого
+     * экран молчал бы минуты-полторы, выглядя как зависший.
+     */
+    val autopilotProgress = MutableStateFlow<String?>(null)
+
     /* ------------------------------ конфигурация ------------------------------ */
 
     fun update(block: (AppConfig) -> AppConfig) {
@@ -286,6 +294,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             autopilotRunning.value = true
             autopilotResult.value = null
+            autopilotProgress.value = null
             try {
                 val hosts = when (config.value.profile) {
                     ProfileId.YOUTUBE -> listOf("www.youtube.com", "youtubei.googleapis.com")
@@ -303,7 +312,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // По одному кандидату на хост: хосты блокируются по-разному, и
                 // общий кандидат либо не подходит никому, либо ломает тех, кто
                 // и так работает.
-                val perHost = StrategyAutopilot(stack).tunePerHost(hosts, lookup = lookup)
+                val perHost = StrategyAutopilot(stack).tunePerHost(
+                    hosts,
+                    lookup = lookup,
+                    onProgress = { autopilotProgress.value = it }
+                )
                 val winner = perHost.values.firstOrNull()?.second
                 if (winner == null) {
                     autopilotResult.value = app.getString(R.string.autopilot_fail)
@@ -338,6 +351,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 autopilotResult.value = app.getString(R.string.autopilot_fail)
             } finally {
                 autopilotRunning.value = false
+                autopilotProgress.value = null
             }
         }
     }

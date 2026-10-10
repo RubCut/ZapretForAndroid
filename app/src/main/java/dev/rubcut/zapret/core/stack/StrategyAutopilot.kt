@@ -253,19 +253,32 @@ class StrategyAutopilot(private val stack: TcpStack) {
     suspend fun tunePerHost(
         hosts: List<String>,
         perHostTimeoutMs: Long = 6000,
-        lookup: suspend (String) -> InetAddress?
+        lookup: suspend (String) -> InetAddress?,
+        onProgress: (String) -> Unit = {}
     ): Map<String, Pair<String, Strategy>> {
         val out = LinkedHashMap<String, Pair<String, Strategy>>()
+        val total = CANDIDATES.size
         for (host in hosts) {
-            val addr = withTimeoutOrNull(5000) { lookup(host) } ?: continue
-            for ((name, strategy) in CANDIDATES) {
+            onProgress("$host: разрешаю имя…")
+            val addr = withTimeoutOrNull(5000) { lookup(host) }
+            if (addr == null) {
+                onProgress("$host: имя не разрешилось, пропускаю")
+                LogManager.w("DPI: автоподбор: $host не разрешился")
+                continue
+            }
+            for ((index, candidate) in CANDIDATES.withIndex()) {
+                val (name, strategy) = candidate
+                onProgress("$host · ${index + 1}/$total · $name")
+                LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name")
                 if (probe(addr, 443, host, strategy, perHostTimeoutMs)) {
                     out[host] = name to strategy
+                    onProgress("$host: подошло «$name»")
                     LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»")
                     break
                 }
             }
             if (!out.containsKey(host)) {
+                onProgress("$host: ни один кандидат не подошёл")
                 LogManager.w("DPI: автоподбор: для $host не подошёл ни один кандидат")
             }
         }

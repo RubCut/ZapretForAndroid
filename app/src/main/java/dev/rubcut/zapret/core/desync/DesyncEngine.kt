@@ -119,11 +119,27 @@ class DesyncEngine {
         if (isTls && wantsTlsRec) {
             val repacked = Tls.repackRecords(data, 0, data.size, parts)
             if (repacked != null) {
+                // Границы записей И точки разбиения из настроек — вместе.
+                //
+                // Раньше здесь брались только границы переупакованных записей, и
+                // ветка возвращалась раньше общего кода: половина названия
+                // MULTISPLIT_TLSREC не работала, точки из splitPositions
+                // игнорировались. На практике это ломало стратегию
+                // «TLS-записи + разбиение», которая на реальном фильтре и
+                // оказалась единственной рабочей.
+                //
+                // SNI разбирается заново: после переупаковки он сдвинут на
+                // длину добавленной записи, старые смещения больше не годятся.
+                val hello2 = Tls.parseClientHello(repacked, 0, repacked.size)
                 val bounds = Tls.recordBoundaries(repacked, 0, repacked.size)
-                val writes = splitAt(repacked, bounds.filter { it in 1 until repacked.size })
+                val positions = (bounds + collectPositions(s, repacked, hello2, null))
+                    .filter { it in 1 until repacked.size }
+                    .distinct()
+                    .sorted()
+                val writes = splitAt(repacked, positions)
                 if (writes.size >= 2) {
                     return DesyncPlan(
-                        writes, true, "${lead}tlsrec x$parts → ${writes.size} записей", host,
+                        writes, true, "${lead}tlsrec x$parts + разбиение → ${writes.size} записей", host,
                         poison, s.poisonDelayMs
                     )
                 }

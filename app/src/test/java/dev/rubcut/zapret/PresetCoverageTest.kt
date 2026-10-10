@@ -60,8 +60,15 @@ class PresetCoverageTest {
                 d.strategy.isPassive
             )
             assertEquals(
-                "для $host ожидался multisplit с разрывом по 1,midsld, а пришло «${d.strategy.describe()}»",
-                DesyncMode.MULTISPLIT, d.strategy.desync
+                "для $host ожидалась стратегия с разбиением потока (multisplit либо " +
+                    "multisplit+tlsrec), а пришло «${d.strategy.describe()}»",
+                true,
+                d.strategy.desync == DesyncMode.MULTISPLIT ||
+                    d.strategy.desync == DesyncMode.MULTISPLIT_TLSREC
+            )
+            assertTrue(
+                "разрыв по первому байту обязателен, а пришло «${d.strategy.describe()}»",
+                d.strategy.splitPositions.contains(SplitPos.FIRST)
             )
         }
     }

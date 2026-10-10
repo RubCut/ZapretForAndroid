@@ -77,21 +77,50 @@ class RawSocket(private val socket: Socket) : AutoCloseable {
     fun resetTtl(): Boolean = if (ttlTouched) setTtl(DEFAULT_TTL) else false
 
     /**
+     * Отправить сегмент вместе с байтом срочных данных — точная копия `r1.a`
+     * из ZapretYT (`Os.sendto(MSG_OOB)` одним вызовом).
+     *
+     * Эталон делает именно так: `[данные + 1 байт]` уходят одним вызовом
+     * `sendto` с флагом `MSG_OOB`, а остаток — обычной записью следом.
+     * Отдельная отправка одного байта через `MSG_OOB` (прежний `sendUrgentByte`)
+     * даёт на проводе другой образ — два сегмента вместо одного — и приём
+     * не совпадает с прошедшим фильтр.
+     *
+     * При `ErrnoException` эталон отправляет данные ОБЫЧНЫМ способом БЕЗ
+     * срочного байта (байт отбрасывается, а не дублируется). Поэтому метод
+     * возвращает false, а вызывающий обязан дописать данные обычно —
+     * иначе поток потеряет байты.
+     *
+     * @return true если ушло через `MSG_OOB`; false — нужно писать обычно.
+     */
+    fun sendWithOob(data: ByteArray, off: Int, len: Int, urgent: Int): Boolean {
+        val descriptor = fd() ?: return false
+        val buf = ByteArray(len + 1)
+        if (len > 0) System.arraycopy(data, off, buf, 0, len)
+        buf[len] = urgent.toByte()
+        return try {
+            Os.sendto(descriptor, buf, 0, len + 1, OsConstants.MSG_OOB, null, 0)
+            true
+        } catch (e: ErrnoException) {
+            LogManager.d(LogTag.TCP, "OOB не отправился (${e.message}) — отправляю как обычные данные")
+            false
+        } catch (e: Exception) {
+            LogManager.d(LogTag.TCP, "OOB недоступен: ${e.message}")
+            false
+        }
+    }
+
+    fun sendWithOob(data: ByteArray, urgent: Int): Boolean =
+        sendWithOob(data, 0, data.size, urgent)
+
+    /**
      * Отправить один байт срочных данных.
      *
-     * Вызывается МЕЖДУ обычными записями: до — первая часть потока, после —
-     * вторая. На проводе байт есть, а сервер, читающий обычный поток, его
-     * пропускает (urgent держится отдельно от очереди данных) — из-за этого
-     * разбор имени у фильтра, читающего поток как есть, сбивается.
-     *
-     * Важно: срочным уходит ТОЛЬКО этот байт. Отправлять вместе с ним данные
-     * обычным способом нельзя — они ушли бы дублем и сломали бы поток.
-     * Именно так делает и эталон: их `r1.a` шлёт `[данные + 1 байт]` одним
-     * вызовом `sendto(MSG_OOB)`, а остаток — обычной записью следом.
-     *
-     * @return удалось ли отправить именно так; при false вызывающий обязан
-     *   записать байт обычным способом, иначе поток потеряет байт.
+     * @deprecated Не соответствует эталону: `r1.a` шлёт `[данные + байт]`
+     * одним `sendto(MSG_OOB)`, а не байт отдельно. Оставлен для совместимости
+     * тестов; новый код обязан звать [sendWithOob].
      */
+    @Deprecated("Расходится с r1.a: нужен sendWithOob(data, urgent)", ReplaceWith("sendWithOob(byteArrayOf(), urgent)"))
     fun sendUrgentByte(urgent: Int): Boolean {
         val descriptor = fd() ?: return false
         return try {

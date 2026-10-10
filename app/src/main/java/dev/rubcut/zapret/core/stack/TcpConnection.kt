@@ -425,45 +425,79 @@ class TcpConnection(
             // настоящие данные: слать туда настоящий ClientHello бессмысленно,
             // фильтр найдёт в нём тот же SNI. Настоящие данные идут следом с
             // обычным TTL, иначе соединение просто не доедет.
+            //
+            // Как у эталона (r1.b + sendfile): TTL выставляется ДО отправки
+            // пустышки и возвращается ПОСЛЕ в finally. Если TTL не взялся —
+            // пустышка НЕ отправляется вовсе: без малого TTL она дошла бы до
+            // сервера как обычные данные и сломала бы рукопожатие.
             if (plan.fakeTtl > 0 && plan.fakeDummy != null) {
-                val sent = raw != null && runCatching {
-                    raw.setTtl(plan.fakeTtl)
-                    out.write(plan.fakeDummy)
-                    out.flush()
-                    raw.resetTtl()
-                }.isSuccess
-                if (sent) {
-                    TrafficStats.up(plan.fakeDummy.size)
+                var sent = false
+                if (raw != null) {
+                    if (raw.setTtl(plan.fakeTtl)) {
+                        try {
+                            out.write(plan.fakeDummy)
+                            out.flush()
+                            sent = true
+                        } catch (_: Exception) {
+                            sent = false
+                        } finally {
+                            raw.resetTtl()
+                        }
+                    } else {
+                        LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
+                    }
                 } else {
                     // Без управления TTL пустышка ушла бы как обычные данные и
                     // дошла до сервера. Не отправляем вовсе — приём не сработает,
                     // но рукопожатие не сломается.
                     LogManager.d(LogTag.DPI, "TTL недоступен — fake пропущен")
                 }
+                if (sent) {
+                    TrafficStats.up(plan.fakeDummy.size)
+                }
                 // Пауза нужна, чтобы DPI успел разобрать пустышку до настоящих
-                // данных — та же причина, что у poisonDelayMs.
-                val pause = maxOf(strategy.splitDelayMs, plan.poisonDelayMs)
+                // данных — та же причина, что у poisonDelayMs. Эталон спит 3 мс
+                // после sendfile, поэтому минимум — 3 мс даже при нулевых
+                // задержках в настройках.
+                val pause = maxOf(strategy.splitDelayMs, plan.poisonDelayMs, 3)
                 if (pause > 0) delay(pause.toLong())
             }
 
-            // OOB: первый фрагмент уходит обычно, затем один байт срочных
-            // данных, затем остаток. На проводе байт есть, сервер его
-            // пропускает, а разбор имени у фильтра сбивается. Если MSG_OOB не
-            // взялся — байт НЕ дописываем обычным способом (это сломало бы
-            // поток лишним байтом), приём вырождается в обычный разрез.
+            // OOB как у эталона r1.a: первый фрагмент уходит ВМЕСТЕ со срочным
+            // байтом одним вызовом sendto(MSG_OOB), остаток — обычными записями
+            // следом. Если MSG_OOB не взялся — первый фрагмент дописывается
+            // обычно БЕЗ байта (байт отбрасывается, а не дублируется), приём
+            // вырождается в обычный разрез.
             var oobOk = plan.urgentByte == null
-            for ((index, write) in plan.writes.withIndex()) {
-                out.write(write)
-                out.flush()
-                TrafficStats.up(write.size)
-                if (index == 0 && plan.urgentByte != null) {
-                    oobOk = raw?.sendUrgentByte(plan.urgentByte) == true
-                    if (!oobOk) {
-                        LogManager.d(LogTag.DPI, "OOB не взялся — ушёл обычный разрез")
+            if (plan.urgentByte != null) {
+                val urgent = plan.urgentByte and 0xFF
+                val first = plan.writes.firstOrNull() ?: ByteArray(0)
+                val rest = plan.writes.drop(1)
+                oobOk = raw?.sendWithOob(first, urgent) == true
+                if (oobOk) {
+                    TrafficStats.up(first.size)
+                } else {
+                    LogManager.d(LogTag.DPI, "OOB не взялся — ушёл обычный разрез")
+                    out.write(first)
+                    out.flush()
+                    TrafficStats.up(first.size)
+                }
+                for ((index, write) in rest.withIndex()) {
+                    out.write(write)
+                    out.flush()
+                    TrafficStats.up(write.size)
+                    if (index < rest.size - 1 && strategy.splitDelayMs > 0) {
+                        delay(strategy.splitDelayMs.toLong())
                     }
                 }
-                if (index < plan.writes.size - 1 && strategy.splitDelayMs > 0) {
-                    delay(strategy.splitDelayMs.toLong())
+            } else {
+                for ((index, write) in plan.writes.withIndex()) {
+                    out.write(write)
+                    out.flush()
+                    TrafficStats.up(write.size)
+                    if (index < plan.writes.size - 1 && strategy.splitDelayMs > 0) {
+                        delay(strategy.splitDelayMs.toLong())
+                    }
                 }
             }
             // Если OOB не взялся, в журнал честно пишем разрез: приём с

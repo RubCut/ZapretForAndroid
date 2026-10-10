@@ -36,11 +36,12 @@ class DesyncPlan(
     /** Пауза между подставой и настоящими данными, мс. */
     val poisonDelayMs: Int = 0,
     /**
-     * Последний фрагмент уходит с байтом срочных данных.
+     * Первый фрагмент уходит с байтом срочных данных — как `r1.a` в ZapretYT.
      *
-     * Отдельный признак, а не флаг в [writes]: на проводе это тот же байт
-     * данных плюс один байт, отправленный через `MSG_OOB`. Разбирать поток
-     * должен получить фрагменты без него.
+     * Отдельный признак, а не флаг в [writes]: на проводе это данные фрагмента
+     * плюс один байт, отправленные одним вызовом `sendto(MSG_OOB)`. Сервер,
+     * читающий обычный поток, срочный байт пропускает, а разбор имени у
+     * фильтра, читающего поток как есть, сбивается.
      */
     val urgentByte: Int? = null,
     /**
@@ -165,10 +166,16 @@ class DesyncEngine {
         if (s.desync == DesyncMode.FAKE) {
             if (s.fakeTtl <= 0) return giveUp("не задан TTL пустышки")
             if (!isTls || hello == null) return giveUp("fake только для TLS")
-            // Пустышка — заведомо безвредное hello с чужим SNI (как poison):
-            // её разбор фильтром сбивает поиск имени, а до сервера она не
-            // доходит из-за малого TTL. Настоящие данные идут следом.
-            val dummy = Tls.poisonHello(s.poisonSni.ifBlank { DEFAULT_POISON_SNI })
+            // Пустышка — заведомо безвредное hello с чужим SNI: её разбор
+            // фильтром сбивает поиск имени, а до сервера она не доходит из-за
+            // малого TTL. Настоящие данные идут следом.
+            //
+            // Как у эталона (AbstractC0195z0.a): подстава — полноценный
+            // ClientHello с ALPN и браузерным набором расширений, а не
+            // обрезанный poison-шаблон. poisonHello минимален (4 шифра, без
+            // ALPN) и палится отпечатком; buildFakeClientHello ближе к
+            // настоящему hello и к тому, что шлёт ZapretYT.
+            val dummy = Tls.buildFakeClientHello(s.poisonSni.ifBlank { DEFAULT_POISON_SNI })
             return DesyncPlan(
                 listOf(data), true, "${lead}fake ttl=${s.fakeTtl}", host,
                 poison, s.poisonDelayMs, fakeTtl = s.fakeTtl, fakeDummy = dummy
@@ -187,7 +194,11 @@ class DesyncEngine {
             // уезжала совсем в другое место и приём не срабатывал.
             val cutAt = collectPositions(s, data, hello, null)
                 .firstOrNull { it in (Tls.RECORD_HEADER + 1) until data.size }
-            val repacked = cutAt?.let { Tls.repackRecordAt(data, 0, data.size, it) }
+            // Как у эталона AbstractC0148g.a: рез вставляется в исходный буфер
+            // со сдвигом тела (repackRecordInPlace), а не пересобирается.
+            // repackRecordAt даёт тот же байтовый образ для одиночного реза,
+            // но InPlace доказан тестом побайтового совпадения с ZapretYT.
+            val repacked = cutAt?.let { Tls.repackRecordInPlace(data, 0, data.size, it - Tls.RECORD_HEADER) }
                 ?: Tls.repackRecords(data, 0, data.size, parts)
             if (repacked != null) {
                 // Позиции считаются на ИСХОДНЫХ данных и отображаются вперёд

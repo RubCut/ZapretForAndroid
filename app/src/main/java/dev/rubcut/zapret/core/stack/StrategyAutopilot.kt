@@ -88,12 +88,43 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 splitDelayMs = 2,
                 urgentByte = 0
             ),
+            // Эталон ZapretYT перебирает OOB и в начале, и в середине слова:
+            // `--oob=1` и `--oob=0+wm`. Наш MIDSNI — это 0+wm, FIRST — это 1.
+            "oob · первый байт" to Strategy(
+                desync = DesyncMode.OOB,
+                splitPositions = listOf(SplitPos.FIRST),
+                splitDelayMs = 2,
+                urgentByte = 0
+            ),
 
+            // Эталон перебирает fake с TTL 4/6/8/11 (`--fake=-1 --ttl=N`):
+            // у разных провайдеров умирает на разном хопе. Оставляем 8 первым
+            // (частый победитель), остальные — следом, чтобы подбор не упирался
+            // в один TTL. splitPositions здесь не режет поток (FAKE шлёт одну
+            // пустышку целиком), но оставляем MIDSNI для совместимости отчётов.
             "fake · пустышка ttl=8" to Strategy(
                 desync = DesyncMode.FAKE,
                 splitPositions = listOf(SplitPos.MIDSNI),
                 splitDelayMs = 2,
                 fakeTtl = 8
+            ),
+            "fake · пустышка ttl=4" to Strategy(
+                desync = DesyncMode.FAKE,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                fakeTtl = 4
+            ),
+            "fake · пустышка ttl=6" to Strategy(
+                desync = DesyncMode.FAKE,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                fakeTtl = 6
+            ),
+            "fake · пустышка ttl=11" to Strategy(
+                desync = DesyncMode.FAKE,
+                splitPositions = listOf(SplitPos.MIDSNI),
+                splitDelayMs = 2,
+                fakeTtl = 11
             ),
 
             // Смена регистра в имени хоста: обходит фильтры, которые полностью

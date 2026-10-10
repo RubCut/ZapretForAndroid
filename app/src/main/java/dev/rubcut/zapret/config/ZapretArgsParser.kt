@@ -58,22 +58,25 @@ class ParseResult(
  * Разбор командной строки zapret (winws/nfqws) в настройки приложения.
  *
  * Понимает блоки, разделённые `--new`, переносы строк `^` из .bat-файлов и кавычки.
- * Параметры, которые физически невозможно реализовать без root (подмена TTL,
- * fake/disorder/syndata-пакеты, ipfrag, fooling), попадают в список «проигнорировано»
- * с объяснением, а не молча отбрасываются.
+ * Параметры, которые физически невозможно реализовать без root (подмена seq,
+ * rst/ipfrag/fooling вне потока, правка IP-заголовков), попадают в список
+ * «проигнорировано» с объяснением, а не молча отбрасываются.
+ *
+ * OOB/FAKE работают БЕЗ root через android.system.Os на дескрипторе обычного
+ * сокета — так делает ZapretYT (r1.a/r1.b + sendfile): поэтому `oob`/`fake`
+ * здесь поддерживаются, а не игнорируются.
  */
 object ZapretArgsParser {
 
     private val ROOT_ONLY = mapOf(
-        "fake" to "подставные пакеты требуют raw-сокетов (root)",
         "fakeknown" to "требует raw-сокетов (root)",
         "syndata" to "требует raw-сокетов (root)",
         "synack" to "требует raw-сокетов (root)",
-        "disorder" to "переупорядочивание сегментов невозможно через сокет ядра (root)",
-        "disorder2" to "переупорядочивание сегментов невозможно через сокет ядра (root)",
-        "multidisorder" to "переупорядочивание сегментов невозможно через сокет ядра (root)",
+        "disorder" to "пока не реализован (в ZapretYT работает без root через TTL — нужен порт)",
+        "disorder2" to "пока не реализован (в ZapretYT работает без root через TTL — нужен порт)",
+        "multidisorder" to "пока не реализован (в ZapretYT работает без root через TTL — нужен порт)",
+        "disoob" to "пока не реализован (комбинация disorder+oob из ZapretYT — нужен порт)",
         "fakeddisorder" to "требует raw-сокетов (root)",
-        "fakedsplit" to "требует raw-сокетов (root)",
         "rst" to "требует raw-сокетов (root)",
         "rstack" to "требует raw-сокетов (root)",
         "hopbyhop" to "требует raw-сокетов (root)",
@@ -392,6 +395,32 @@ object ZapretArgsParser {
         var custom = currentCustom
         for (raw in value.split(',', ';', ' ').filter { it.isNotBlank() }) {
             val t = raw.trim().lowercase()
+            // Синтаксис ZapretYT/ByeDPI: `0+wm`, `1+s`, `0+sm`, `3+s` и т.п.
+            // (см. y1.a.V: base[:c[:d]]+flags, где w=слово/second-level,
+            // s=sni, m=середина, e=конец, r=случайно). Наши SplitPos грубее,
+            // поэтому отображаем флаги на ближайший смысл без потери приёма:
+            // `wm`/`sm`/`midsni`/`midsld` → середина домена, `se`/`endsni` → конец.
+            if ('+' in t) {
+                val flags = t.substringAfter('+', "")
+                when {
+                    "wm" in flags || "sm" in flags || "midsni" in flags || "midsld" in flags || "middom" in flags -> {
+                        out += SplitPos.MIDSNI; continue
+                    }
+                    "se" in flags || "endsni" in flags || "sniend" in flags || "enddom" in flags -> {
+                        out += SplitPos.SNIEND; continue
+                    }
+                    flags.startsWith("s") || flags == "sni" || "sniext" in flags || "dom" in flags -> {
+                        // `1+s` = SNI+1: разрыв сразу за началом имени — ближе
+                        // всего к FIRST по эффекту на DPI, но точнее — начало SNI.
+                        // Отдельного SplitPos для него нет, поэтому берём MIDSNI
+                        // только если base==0 (середина слова уже учтена выше);
+                        // иначе это разрыв у начала имени → FIRST.
+                        val baseNum = t.substringBefore('+', "").substringBefore(':', "").toIntOrNull() ?: 0
+                        if (baseNum <= 1) out += SplitPos.FIRST else out += SplitPos.MIDSNI
+                        continue
+                    }
+                }
+            }
             val asInt = t.toIntOrNull()
             when {
                 asInt != null -> { out += SplitPos.CUSTOM; custom = asInt.coerceIn(1, 65535) }

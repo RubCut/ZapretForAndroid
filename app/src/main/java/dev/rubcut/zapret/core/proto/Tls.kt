@@ -449,6 +449,22 @@ object Tls {
         }
         // ec_point_formats
         writeExt(ext, 0x000b) { byteArrayOf(2, 1, 0) }
+        // ALPN: h2 + http/1.1 — как у эталона AbstractC0195z0.a и у браузеров.
+        // Без него hello палится отпечатком: 99% реальных клиентов шлют ALPN,
+        // а подстава без него выглядит синтетикой и хуже сбивает разбор DPI.
+        writeExt(ext, 0x0010) {
+            val inner = ByteArrayOutputStream()
+            for (p in listOf("h2", "http/1.1")) {
+                val pb = p.toByteArray(Charsets.US_ASCII)
+                inner.write(pb.size)
+                inner.write(pb)
+            }
+            val ib = inner.toByteArray()
+            val b = ByteArrayOutputStream()
+            putU16Buf(b, ib.size)
+            b.write(ib)
+            b.toByteArray()
+        }
 
         val extBytes = ext.toByteArray()
 

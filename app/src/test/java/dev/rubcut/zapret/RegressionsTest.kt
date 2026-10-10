@@ -165,6 +165,38 @@ class RegressionsTest {
         )
     }
 
+    /**
+     * ClientHello обязан быть добит паддингом до размера Chrome (517 Б).
+     *
+     * Наблюдение с устройства: наш hello был 245–246 Б при полном браузерном
+     * наборе расширений, и все зонды получали «SYN-ACK есть, ответа нет» —
+     * при том что настоящий трафик через тот же туннель шёл с нулём ошибок.
+     * Мелкий hello при верном отпечатке выглядит подделкой, и такие фильтры
+     * отбрасывают его молча.
+     */
+    @Test
+    fun probeClientHelloIsPaddedToChromeSize() {
+        for (host in listOf("www.youtube.com", "www.google.com", "example.com", "a.b")) {
+            val hello = StrategyAutopilot.clientHelloFor(host)
+            assertEquals(
+                "hello для $host обязан быть добит до ${StrategyAutopilot.CHROME_HELLO_SIZE} Б, " +
+                    "а получился ${hello.size} — фильтры режут мелкие hello молча",
+                StrategyAutopilot.CHROME_HELLO_SIZE, hello.size
+            )
+            // Паддинг обязан быть в конце: [тип 21][длина][нули], и длина
+            // обязана сходиться с остатком записи.
+            val parsed = parseClientHello(hello) ?: throw AssertionError("hello не разобран")
+            assertTrue(
+                "расширение padding (21) обязано присутствовать",
+                21 in parsed.extensionTypes
+            )
+            assertEquals(
+                "SNI обязан читаться после паддинга",
+                host, Tls.parseClientHello(hello, 0, hello.size)?.sni
+            )
+        }
+    }
+
     /* ================================================================== */
     /*  2. Виртуальные адреса DNS нельзя сравнивать по строке                */
     /* ================================================================== */

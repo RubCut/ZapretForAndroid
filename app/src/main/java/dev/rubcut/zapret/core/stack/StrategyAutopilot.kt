@@ -358,8 +358,33 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 putU16Buf(body, suites.size * 2)
                 for (s in suites) putU16Buf(body, s)
                 body.write(1); body.write(0)                                // compression
-                putU16Buf(body, ext.size())
-                body.write(ext.toByteArray())
+
+                // Паддинг до 517 байт — ровно как делает Chrome.
+                //
+                // Наблюдение с устройства: наш hello выходил 245–246 Б, тогда
+                // как настоящий Chrome шлёт ~517 Б. Фильтры, решающие по
+                // размеру и отпечатку, такой «браузерный на вид, но мелкий»
+                // hello отбрасывают молча — отсюда «SYN-ACK есть, ответа нет»
+                // при живом настоящем трафике на тех же адресах.
+                //
+                // Цель — 517 Б целиком: 9 байт заголовков (запись 5 + handshake 4)
+                // плюс тело. Считаем от уже собранных расширений.
+                val extSoFar = ext.toByteArray()
+                val bodyFixed = 67 + extSoFar.size          // версия+random+id+suites+compression
+                val wantBody = CHROME_HELLO_SIZE - 9
+                val need = wantBody - bodyFixed
+                val extOut = ByteArrayOutputStream(extSoFar.size + 4 + (if (need > 0) need else 0))
+                extOut.write(extSoFar)
+                if (need > 0) {
+                    // padding (RFC 7685): [тип 21][длина][нули]
+                    putU16Buf(extOut, 21)
+                    putU16Buf(extOut, need)
+                    extOut.write(ByteArray(need))
+                }
+                val extFinal = extOut.toByteArray()
+
+                putU16Buf(body, extFinal.size)
+                body.write(extFinal)
                 val bodyBytes = body.toByteArray()
 
                 val hs = ByteArrayOutputStream()
@@ -402,6 +427,17 @@ class StrategyAutopilot(private val stack: TcpStack) {
          * завершается (мы закрываемся после ServerHello), поэтому приватная
          * часть не хранится.
          */
+        /**
+         * Размер ClientHello, до которого Chrome добивает паддингом.
+         *
+         * Константа из его поведения ради совместимости со «средними
+         * коробками» — 517 байт. Наш hello без паддинга выходил 245–246 байт при
+         * полном браузерном наборе расширений, и такие «мелкие» hello фильтры
+         * отбрасывали молча: отсюда «SYN-ACK есть, ответа нет» при живом
+         * настоящем трафике на тех же адресах.
+         */
+        const val CHROME_HELLO_SIZE = 517
+
         fun x25519PublicKey(): ByteArray = try {
             val kpg = java.security.KeyPairGenerator.getInstance("X25519")
             kpg.generateKeyPair().public.encoded.let { enc ->

@@ -188,7 +188,17 @@ class DnsResolver(
 
         // Запасной путь. Без него любая авария DoH/DoT выглядела бы для
         // пользователя как «интернет не работает вовсе».
-        val backup = systemServers() + FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
+        // Откат НЕ должен идти через DNS провайдера: он подменяет ответы
+        // (`example.com` приходил как `8.47.69.5` вместо `104.20.23.154`, при
+        // том что DoH был полностью жив). Пользователь выбрал DoH/DoT именно
+        // потому, что доверять обычному DNS нельзя, и подставлять его первым
+        // в «запасной» путь — значило подменять защищённый резолвер небезопасным.
+        // Системные серверы остаются только в режиме SYSTEM.
+        val backup = if (cfg.dnsMode == DnsMode.SYSTEM) {
+            systemServers() + FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
+        } else {
+            FALLBACK_SERVERS.map { InetSocketAddress(it.first, it.second) }
+        }
         val r = try {
             val r = viaUdp(cfg, name, type, backup, "fallback")
             if (r is DnsResult.Failed) {

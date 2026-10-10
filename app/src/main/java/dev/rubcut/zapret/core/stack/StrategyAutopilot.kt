@@ -2,10 +2,13 @@ package dev.rubcut.zapret.core.stack
 
 import dev.rubcut.zapret.core.LogManager
 import dev.rubcut.zapret.core.LogTag
+import dev.rubcut.zapret.core.desync.DesyncPlan
+import dev.rubcut.zapret.core.desync.FlowContext
 import dev.rubcut.zapret.core.net.PacketBuilder
 import dev.rubcut.zapret.core.net.TcpFlag
 import dev.rubcut.zapret.core.net.parseIp
 import dev.rubcut.zapret.core.net.parseTcp
+import dev.rubcut.zapret.core.proto.Tls
 import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
@@ -595,6 +598,13 @@ class StrategyAutopilot(private val stack: TcpStack) {
 
             feed(clientTcp(addr, clientPort, port, clientIsn + 1, serverIsn + 1, TcpFlag.ACK))
             val hello = clientHelloFor(host)
+            // Подробный лог по «сырому» hello, которое уходит в сокет.
+            //
+            // Нужен, потому что по одному вердикту нельзя понять, до чего
+            // дошло дело: «тишина после SYN-ACK» одинаково выглядит при
+            // невалидном hello, при сбросе на стороне провайдера и при
+            // верном hello, отброшенном фильтром. Видно только здесь.
+            logProbeDetail(host, port, addr, strategy, hello)
             feed(
                 clientTcp(
                     addr, clientPort, port, clientIsn + 1, serverIsn + 1,
@@ -644,12 +654,17 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // У alert разбираем КОД: без него «сервер отверг» — пустая фраза,
             // а именно код объясняет причину. 48 (unknown_ca) — про то, что мы
             // говорим не с тем сервером или подставили имя; 40
-            // (handshake_failure) — про сам ClientHello; 47 — про сертификат
-            // у стороны сервера (нас не касается).
-            val alertCode = if (first == 0x15 && down.size - (ip.payloadOffset + seg.headerLen) >= 6) {
-                val base = ip.payloadOffset + seg.headerLen
-                // alert: [0]=0x15 [1]=level [2..3]=длина [4]=описание [5]=код
-                (down[base + 4].toInt() and 0xFF) to (down[base + 5].toInt() and 0xFF)
+            // (handshake_failure) — про сам ClientHello.
+            //
+            // СМЕЩЕНИЕ: запись TLS — это заголовок из 5 байт
+            // [тип=0x15][версия 2 байта][длина 2 байта], и только ПОСЛЕ него
+            // идёт тело alert [level][description]. То есть level лежит на
+            // base+5, а код на base+6. Раньше читалось base+4/base+5, то есть
+            // младший байт длины и level — и в журнал шло нечто вроде
+            // «warning(код 2)», что не является ни одним alert вообще.
+            val base = ip.payloadOffset + seg.headerLen
+            val alertCode = if (first == 0x15 && down.size - base >= 7) {
+                (down[base + 5].toInt() and 0xFF) to (down[base + 6].toInt() and 0xFF)
             } else {
                 null
             }
@@ -723,6 +738,57 @@ private suspend fun probeRecon(
         else -> "адрес $ip молчит на любом SNI — похоже на блокировку по адресу или сети"
     }
     return "$ownText, чужой SNI → $otherText [$ip] ($conclusion)" to ownText
+}
+
+/**
+ * Подробный отчёт по тому, что зонд реально отправляет в сокет.
+ *
+ * Заполняется НЕЗАВИСИМО от того, какой приём выберет движок: это разбор
+ * исходного ClientHello плюс то, что получится на выходе. Так видно разницу
+ * между «приём не сработал» и «приём не применился», а главное — позволяет
+ * проверить сам hello, не гоняя зонд по кругу.
+ *
+ * Печатается на уровне DPI (обычный), а не debug: разбор зонда идёт редко,
+ * а потерянные строки стоили двух кругов диагностики.
+ */
+private fun StrategyAutopilot.logProbeDetail(
+    host: String,
+    port: Int,
+    addr: InetAddress,
+    strategy: Strategy,
+    hello: ByteArray
+) {
+    val plan: DesyncPlan = stack.engine.plan(hello, FlowContext(port, host, false), strategy)
+    val sb = StringBuilder()
+    sb.append("зонд $host:$port [${addr.hostAddress}] «${strategyLabel(strategy)}» · ")
+    sb.append("hello=${hello.size} Б")
+
+    val info = Tls.parseClientHello(hello, 0, hello.size)
+    sb.append(", SNI=").append(info?.sni ?: "не разобран")
+    if (info != null) {
+        sb.append(" @[").append(info.sniStart).append(',').append(info.sniEnd).append(')')
+        sb.append(", разрез по середине домена=").append(info.midsldOffset)
+    }
+    sb.append(" · план=").append(plan.technique)
+    sb.append(", применён=").append(plan.applied)
+
+    // Фрагменты с их границами: по ним видно, где именно лег разрез.
+    plan.writes.forEachIndexed { i, w ->
+        val extra = buildString {
+            if (plan.urgentByte != null && i == 0) append("+OOB")
+            if (plan.ttl1Indices.contains(i)) append("+TTL1")
+            if (w.isNotEmpty() && (w[0].toInt() and 0xFF) == 0x16) append(" TLS")
+        }
+        sb.append(" · [$i] ").append(w.size).append(" Б").append(extra)
+    }
+    val sum = plan.writes.sumOf { it.size } + (plan.poison?.size ?: 0)
+    if (plan.poison != null) sb.append(" · подмена=").append(plan.poison!!.size).append(" Б")
+    if (plan.fakeDummy != null) {
+        sb.append(" · пустышка=").append(plan.fakeDummy!!.size)
+            .append(" Б, ttl=").append(plan.fakeTtl)
+    }
+    sb.append(" · всего в провод=").append(sum + (plan.fakeDummy?.size ?: 0)).append(" Б")
+    LogManager.i(LogTag.DPI, sb.toString())
 }
 
 /**

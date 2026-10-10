@@ -11,7 +11,7 @@ import org.json.JSONObject
  * 2 — правила профилей освежены (tlsrec + середина домена, без смены
  *     регистра), добавлены поля urgentByte/fakeTtl.
  */
-const val CURRENT_CONFIG_VERSION = 2
+const val CURRENT_CONFIG_VERSION = 3
 
 /**
  * Режим десинхронизации DPI.

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import dev.rubcut.zapret.data.DnsMode
 import org.json.JSONObject
 
 private val Context.zapretDataStore by preferencesDataStore(name = "zapret-config")
@@ -92,16 +93,35 @@ class ConfigRepository(private val context: Context, scope: CoroutineScope) {
      * позапрошлой версии (у нас так уже было: профиль говорил tlsrec, а
      * применялась смена регистра с разрывом по первому байту).
      */
-    private fun migrate(cfg: AppConfig): AppConfig {
-        if (cfg.configVersion >= CURRENT_CONFIG_VERSION) return cfg
-        if (cfg.profile == ProfileId.CUSTOM) return cfg.copy(configVersion = CURRENT_CONFIG_VERSION)
-        val fresh = Presets.apply(cfg.profile, AppConfig())
-        val generated = cfg.rules.filter { it.isGenerated }
-        return cfg.copy(
-            rules = generated + fresh.rules,
-            configVersion = CURRENT_CONFIG_VERSION
-        )
+    private fun migrate(cfg: AppConfig): AppConfig = migrateConfig(cfg)
+
+    /**
+ * Освежение конфигурации при смене схемы.
+ *
+ * Отдельно от класса, чтобы её можно было проверить в JVM-тесте: репозиторий
+ * требует Context, а чистая функция — нет.
+ *
+ * Про DNS: прежняя схема при сбое DoH НАВСЕГДА писала `dnsMode = SYSTEM`, и
+ * режим застревал навсегда — имена резолвились через DNS провайдера, который
+ * подменяет адреса (`example.com` приходил как `8.47.69.1`, и любая проверка
+ * связи по такому адресу врала). Откат больше не трогает настройку, а вернуть
+ * DoH нужно ровно один раз — здесь. Отличить добровольный выбор SYSTEM от
+ * последствия бага нельзя, поэтому SYSTEM считаем следствием бага.
+ */
+internal fun migrateConfig(cfg: AppConfig): AppConfig {
+    if (cfg.configVersion >= CURRENT_CONFIG_VERSION) return cfg
+    val dns = if (cfg.dnsMode == DnsMode.SYSTEM) AppConfig().dnsMode else cfg.dnsMode
+    if (cfg.profile == ProfileId.CUSTOM) {
+        return cfg.copy(dnsMode = dns, configVersion = CURRENT_CONFIG_VERSION)
     }
+    val fresh = Presets.apply(cfg.profile, AppConfig())
+    val generated = cfg.rules.filter { it.isGenerated }
+    return cfg.copy(
+        rules = generated + fresh.rules,
+        dnsMode = dns,
+        configVersion = CURRENT_CONFIG_VERSION
+    )
+}
 
     private companion object {
         val CONFIG_KEY: Preferences.Key<String> = stringPreferencesKey("config_json")

@@ -19,7 +19,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.random.Random
 
 /** Результат подбора: человекочитаемое имя, сама стратегия и счёт проверок. */
 data class TuneResult(val name: String, val strategy: Strategy, val ok: Int, val total: Int)
@@ -45,10 +44,13 @@ class StrategyAutopilot(private val stack: TcpStack) {
      * Зонды идут строго по одному: `packetWriter.tap` и `probeFor` — общие на
      * весь стек, и два параллельных зонда затирали бы друг друга, а `finally`
      * чужого зонда гасил бы tap посреди чужого приёма.
+     *
+     * Мьютекс ОБЩИЙ (companion): каждый вызов создаёт новый StrategyAutopilot
+     * (сервис, selfHeal, UI-подбор), и мьютекс на инстансе сериализации не
+     * давал вовсе — параллельные зонды из разных источников делили tap.
      */
-    private val probeMutex = Mutex()
-
     companion object {
+        private val probeMutex = Mutex()
         /**
          * Сколько адресов хоста перебирают зонды.
          *
@@ -441,16 +443,46 @@ class StrategyAutopilot(private val stack: TcpStack) {
          */
         const val CHROME_HELLO_SIZE = 517
 
-        fun x25519PublicKey(): ByteArray = try {
-            val kpg = java.security.KeyPairGenerator.getInstance("X25519")
-            kpg.generateKeyPair().public.encoded.let { enc ->
-                // X.509 SubjectPublicKeyInfo: последние 32 байта — сам ключ.
-                if (enc.size > 32) enc.copyOfRange(enc.size - 32, enc.size) else enc
+        fun x25519PublicKey(): ByteArray {
+            cachedX25519?.let { return it }
+            val fresh = try {
+                val kpg = java.security.KeyPairGenerator.getInstance("X25519")
+                kpg.generateKeyPair().public.encoded.let { enc ->
+                    // X.509 SubjectPublicKeyInfo: последние 32 байта — сам ключ.
+                    if (enc.size > 32) enc.copyOfRange(enc.size - 32, enc.size) else enc
+                }
+            } catch (_: Exception) {
+                // Fallback: базовая точка X25519 (u=9). Она валидна по кривой,
+                // поэтому сервер примет ключ, даже если генератор недоступен.
+                byteArrayOf(9) + ByteArray(31)
             }
-        } catch (_: Exception) {
-            // Fallback: базовая точка X25519 (u=9). Она валидна по кривой,
-            // поэтому сервер примет ключ, даже если генератор недоступен.
-            byteArrayOf(9) + ByteArray(31)
+            // Ключ нужен только для вида hello (рукопожатие не завершается),
+            // поэтому один ключ на все зонды: раньше пара генерировалась на
+            // каждый зонд — десятки генераций за tunePerHost и жор энтропии.
+            synchronized(this) {
+                if (cachedX25519 == null) cachedX25519 = fresh
+                return cachedX25519!!
+            }
+        }
+
+        @Volatile
+        private var cachedX25519: ByteArray? = null
+
+        private val secureProbeRandom = java.security.SecureRandom()
+
+        /**
+         * Быстрый фильтр tap: пакет адресован нашему зонду (порт назначения
+         * совпал и это TCP)? Разбор дешёвый, вызывается на каждый пакет tun.
+         */
+        private fun isProbeReply(p: ByteArray, clientPort: Int): Boolean {
+            return try {
+                val ip = parseIp(p, p.size) ?: return false
+                if (!ip.isTcp) return false
+                val seg = parseTcp(p, ip.payloadOffset, ip.payloadLength) ?: return false
+                seg.dstPort == clientPort
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 
@@ -666,12 +698,24 @@ class StrategyAutopilot(private val stack: TcpStack) {
         timeoutMs: Long = 6000
     ): Verdict = probeMutex.withLock {
         withTimeoutOrNull(timeoutMs) {
+        // Зонд строит заголовок IPv4 фиксированно (clientTcp пишет 0x45):
+        // 16-байтный AAAA-адрес в 4-байтном поле дал бы мусор. Пока честно
+        // отказываемся: вызывающие шлют только A (см. selfTest/tunePerHost).
+        if (addr.address.size == 16) {
+            LogManager.d(LogTag.DPI, "зонд $host:${port} [${addr.hostAddress}]: IPv6-зонды не поддерживаются, пропускаю")
+            return@withTimeoutOrNull Verdict.TIMEOUT
+        }
         // Эфемерные порты, а не весь диапазон: младшие (<1024) привилегированы,
         // а 0 и вовсе недопустим как порт источника.
         val clientPort = 32768 + (portCounter.incrementAndGet() % 28232)
-        val clientIsn = Random.nextInt()
+        val clientIsn = secureProbeRandom.nextInt()
         val captured = Channel<ByteArray>(Channel.UNLIMITED)
-        val tap: (ByteArray) -> Unit = { p -> captured.trySend(p) }
+        // Фильтр в tap, а не при чтении: раньше ВЕСЬ трафик туннеля за время
+        // зонда (до 6 с, включая видео) копился в Channel.UNLIMITED, и очередь
+        // росла неограниченно. Отсекаем чужое сразу по порту назначения.
+        val tap: (ByteArray) -> Unit = { p ->
+            if (isProbeReply(p, clientPort)) captured.trySend(p)
+        }
         var result = Verdict.TIMEOUT
         stack.packetWriter.tap = tap
         stack.probeFor = clientPort to strategy

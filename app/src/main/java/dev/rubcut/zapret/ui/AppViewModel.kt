@@ -532,12 +532,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun testDns(host: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
-            val protector: SocketProtector = ZapretVpnService.instance?.protector ?: DirectProtector
+            val live = ZapretVpnService.instance?.protector
+            val protector: SocketProtector = live ?: DirectProtector
             val resolver = DnsResolver(
                 context = getApplication(),
                 configProvider = { repo.current },
                 listsProvider = { lists.current },
-                protector = protector
+                protector = protector,
+                // Без туннеля изолировать нечего (сокеты идут напрямую) —
+                // fail-closed здесь дал бы 100% ошибку проверки.
+                failClosed = live != null
             )
             val text = try {
                 testResolver(resolver, host)

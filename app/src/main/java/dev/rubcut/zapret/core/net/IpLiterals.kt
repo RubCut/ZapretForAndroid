@@ -96,7 +96,7 @@ object IpLiterals {
     private fun isHex(c: Char): Boolean =
         c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
 
-    /** Разбор "host[:port]" / "[v6]:port". */
+    /** Разбор "host[:port]" / "[v6]:port". Голый IPv6 без скобок — весь текст хост. */
     fun parseHostPort(text: String, defaultPort: Int): Pair<String, Int>? {
         val t = text.trim()
         if (t.isEmpty()) return null
@@ -110,6 +110,9 @@ object IpLiterals {
         }
         val colon = t.indexOf(':')
         if (colon < 0) return t to defaultPort
+        // Второе двоеточие — это голый IPv6 (fd00::1), а не host:port:
+        // раньше он резался по первому ':' в хост "fd00" с мусором в порту.
+        if (t.indexOf(':', colon + 1) >= 0) return t to defaultPort
         val port = t.substring(colon + 1).toIntOrNull() ?: defaultPort
         return t.substring(0, colon) to port
     }

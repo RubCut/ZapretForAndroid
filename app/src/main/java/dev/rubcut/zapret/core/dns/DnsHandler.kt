@@ -193,7 +193,10 @@ class DnsHandler(
 
     private companion object {
         const val MAX_IN_FLIGHT = 96
-        const val RESOLVE_TIMEOUT_MS = 12_000L
+        // Было 12 с: медленный DoH держал слот очереди все 12 с, приложения
+        // ретраили, дубли плодили очередь в лавину SERVFAIL. Клиентский
+        // таймаут обычно ~5 с — 8 с достаточно, чтобы не плодить дубли.
+        const val RESOLVE_TIMEOUT_MS = 8_000L
         const val RCODE_SERVFAIL = 2
         const val RCODE_NXDOMAIN = 3
     }

@@ -47,7 +47,15 @@ class DnsResolver(
     private val context: Context,
     private val configProvider: () -> AppConfig,
     private val listsProvider: () -> HostListStore.Snapshot,
-    private val protector: SocketProtector
+    private val protector: SocketProtector,
+    /**
+     * Fail-closed для upstream-сокетов: без изоляции — исключение, а не warn.
+     *
+     * Отключается ТОЛЬКО для проверки DNS из UI без поднятого туннеля
+     * (DirectProtector всегда false — там изолировать нечего, сокеты идут
+     * напрямую по построению). В туннеле всегда true.
+     */
+    private val failClosed: Boolean = true
 ) {
 
     private class CacheEntry(val addresses: List<InetAddress>, val expireAt: Long)
@@ -125,6 +133,10 @@ class DnsResolver(
     @Volatile
     private var secureBypassUntil = 0L
 
+    /** Когда последний раз при активном резерве пробовали основной режим. */
+    @Volatile
+    private var lastBypassRetry = 0L
+
     /**
      * Держать резервные серверы, пока `secureDnsFailures >= 3`.
      *
@@ -150,12 +162,20 @@ class DnsResolver(
         // запросе — значит выглядеть как «интернет не работает вовсе», поэтому
         // после серии аварий минутный интервал ходим сразу в системный DNS.
         if (secureMode && System.currentTimeMillis() < secureBypassUntil) {
-            val r = try {
-                viaUdp(cfg, name, type, systemServers(), "system")
-            } catch (e: Exception) {
-                DnsResult.Failed(e.message ?: "unknown")
+            // «Навсегда» от самоисцеления — тоже с периодической проверкой:
+            // раз в минуту пробуем основной режим, иначе DoH не вернулся бы
+            // до рестарта даже после починки сети.
+            val now = System.currentTimeMillis()
+            if (!forceFallbackServers || now - lastBypassRetry < BYPASS_RETRY_MS) {
+                val r = try {
+                    viaUdp(cfg, name, type, systemServers(), "system")
+                } catch (e: Exception) {
+                    DnsResult.Failed(e.message ?: "unknown")
+                }
+                if (r !is DnsResult.Failed) return r to true
+            } else {
+                lastBypassRetry = now
             }
-            if (r !is DnsResult.Failed) return r to true
         }
         val primary = try {
             when (cfg.dnsMode) {
@@ -171,7 +191,17 @@ class DnsResolver(
         // DnsResult.Blocked (NXDOMAIN/блок-лист) — это ответ, а не авария:
         // откатываться на другой сервер здесь нельзя, иначе блок-лист не сработает.
         if (primary !is DnsResult.Failed) {
-            if (secureMode) secureDnsFailures = 0
+            if (secureMode) {
+                secureDnsFailures = 0
+                // Успех основного режима снимает «временный» резерв: раньше
+                // forceFallbackServers, поставленный самоисцелением, стоял
+                // навсегда (secureBypassUntil=MAX), и DoH больше не пробовался
+                // до рестарта.
+                if (forceFallbackServers) {
+                    forceFallbackServers = false
+                    LogManager.i(LogTag.DNS, "DNS: ${cfg.dnsMode} снова отвечает — резерв снят")
+                }
+            }
             return primary to false
         }
         if (secureMode) {
@@ -260,12 +290,18 @@ class DnsResolver(
         var socket: DatagramSocket? = null
         return try {
             socket = DatagramSocket()
-            protector.protect(socket)
+            ensureIsolated(protector.protect(socket), "DNS-сокет")
             socket.soTimeout = 4000
-            socket.send(DatagramPacket(query, len, server, port))
+            // connect(): ядро отбрасывает ответы не от этого пира — раньше
+            // receive() принимал ответ от ЛЮБОГО источника, и спуф с угаданным
+            // TXID травил ответы.
+            socket.connect(InetSocketAddress(server, port))
+            socket.send(DatagramPacket(query, len))
             val buf = ByteArray(4096)
             val packet = DatagramPacket(buf, buf.size)
             socket.receive(packet)
+            // TXID обязан совпасть с запросом: чужой/старый ответ отбрасываем.
+            if (packet.length < 2 || txid(buf) != txid(query)) return null
             buf.copyOf(packet.length)
         } catch (e: Exception) {
             LogManager.d(LogTag.DNS, "forward DNS → $server: ${e.message}")
@@ -275,21 +311,33 @@ class DnsResolver(
         }
     }
 
+    private fun txid(b: ByteArray): Int = ((b[0].toInt() and 0xFF) shl 8) or (b[1].toInt() and 0xFF)
+
     private fun viaUdp(cfg: AppConfig, name: String, type: Int, servers: List<InetSocketAddress>, label: String): DnsResult {
         if (servers.isEmpty()) return DnsResult.Failed("нет серверов")
-        val query = DnsMessage.buildQuery((Math.random() * 65535).toInt() and 0xFFFF, name, type)
+        // SecureRandom вместо Math.random(): предсказуемый TXID + приём от
+        // любого источника позволяли травить кэш спуфом.
+        val id = secureUdpRandom.nextInt(65536)
+        val query = DnsMessage.buildQuery(id, name, type)
         var lastError = "нет ответа"
         for (s in servers) {
             var socket: DatagramSocket? = null
             try {
                 socket = DatagramSocket()
-                protector.protect(socket)
+                if (!protector.protect(socket)) {
+                    throw IOException("DNS-сокет не изолирован от туннеля")
+                }
                 socket.soTimeout = 3500
-                socket.send(DatagramPacket(query, query.size, s.address, s.port))
+                socket.connect(InetSocketAddress(s.address, s.port))
+                socket.send(DatagramPacket(query, query.size))
                 val buf = ByteArray(4096)
                 val packet = DatagramPacket(buf, buf.size)
                 socket.receive(packet)
                 val len = packet.length
+                if (len < 2 || txid(buf) != id) {
+                    lastError = "чужой TXID"
+                    continue
+                }
                 val rcode = DnsMessage.rcode(buf, len)
                 if (rcode == 3) return DnsResult.Blocked
                 if (rcode != 0) { lastError = "rcode=$rcode"; continue }
@@ -394,6 +442,17 @@ class DnsResolver(
         return null
     }
 
+
+    /**
+     * Fail-closed для изоляции (см. [failClosed]). Неизолированный upstream в
+     * туннеле петляет в собственный TUN — молча продолжать с warn нельзя.
+     */
+    private fun ensureIsolated(ok: Boolean, what: String, socket: java.io.Closeable? = null) {
+        if (ok || !failClosed) return
+        try { socket?.close() } catch (_: Exception) {}
+        throw IOException("$what не изолирован от туннеля")
+    }
+
     /* ---------------------------------------------------------------- */
     /*  Диагностика                                                      */
     /* ---------------------------------------------------------------- */
@@ -429,6 +488,10 @@ class DnsResolver(
         const val BOOTSTRAP_TTL_MS = 10 * 60 * 1000L
         const val CONNECT_TIMEOUT_MS = 6000
         const val READ_TIMEOUT_MS = 6000
+        /** Периодичность проверки основного режима при залипшем резерве. */
+        const val BYPASS_RETRY_MS = 60_000L
+        /** Непредсказуемый TXID для UDP-запросов (защита от спуфа). */
+        private val secureUdpRandom = java.security.SecureRandom()
 
         /**
          * Адреса крупнейших публичных DoH/DoT-серверов. Они десятилетиями не
@@ -508,7 +571,7 @@ class DnsResolver(
             val addr = bootstrapResolve(host)
                 ?: throw IOException("адрес DoH-сервера $host не определён")
             val s = SSLSocketFactory.getDefault().createSocket() as SSLSocket
-            protector.protect(s)
+            ensureIsolated(protector.protect(s), "DoH-сокет", s)
             // Подключаемся к литеральному адресу: иначе getByName ушёл бы в наш же туннель.
             s.connect(InetSocketAddress(addr, port), CONNECT_TIMEOUT_MS)
             s.soTimeout = READ_TIMEOUT_MS
@@ -523,7 +586,7 @@ class DnsResolver(
             LogManager.d(LogTag.DNS, "DoH: канал к $host (${addr.hostAddress}) установлен")
         }
 
-        private fun doQuery(name: String, type: String): List<String>? {
+        private fun doQuery(name: String, type: String, depth: Int = 0): List<String>? {
             val out = output ?: return null
             val inp = input ?: return null
             val request = "GET " + path + "?name=" + urlEncode(name) + "&type=" + type + " HTTP/1.1\r\n" +
@@ -555,10 +618,10 @@ class DnsResolver(
                     readAll(inp)
                 }
             }
-            return parseJson(String(body, Charsets.UTF_8), name, type)
+            return parseJson(String(body, Charsets.UTF_8), name, type, depth)
         }
 
-        private fun parseJson(json: String, name: String, type: String): List<String>? {
+        private fun parseJson(json: String, name: String, type: String, depth: Int = 0): List<String>? {
             return try {
                 val o = JSONObject(json)
                 val status = o.optInt("Status", 0)
@@ -575,8 +638,10 @@ class DnsResolver(
                     if (t == wanted && d.isNotEmpty()) out += d
                     else if (t == 5 && d.isNotEmpty()) cname = d.trimEnd('.')
                 }
-                if (out.isEmpty() && cname != null && cname != name) {
-                    val nested = doQuery(cname, type)
+                // Глубина рекурсии ограничена: злонамеренный/битый ответ с
+                // цепочкой CNAME иначе гонял бы запросы бесконечно.
+                if (out.isEmpty() && cname != null && cname != name && depth < MAX_CNAME_DEPTH) {
+                    val nested = doQuery(cname, type, depth + 1)
                     if (nested != null) out += nested
                 }
                 out
@@ -595,8 +660,25 @@ class DnsResolver(
             socket = null; input = null; output = null
         }
 
-        private fun urlEncode(s: String): String =
-            s.replace("%", "%25").replace("&", "%26").replace("=", "%3D").replace(" ", "%20")
+        private fun urlEncode(s: String): String = buildString(s.length) {
+            // Кодируем всё, кроме unreserved (RFC 3986): раньше кодировались
+            // только %&= и пробел, и имя с '+'/'#'/'?' ломало query-string.
+            for (c in s) {
+                if (c.isLetterOrDigit() || c == '-' || c == '_' || c == '.' || c == '~') append(c)
+                else {
+                    for (b in c.toString().toByteArray(Charsets.UTF_8)) {
+                        append('%')
+                        append(HEX[(b.toInt() and 0xFF) ushr 4])
+                        append(HEX[b.toInt() and 0x0F])
+                    }
+                }
+            }
+        }
+
+        private companion object {
+            const val MAX_CNAME_DEPTH = 4
+            const val HEX = "0123456789ABCDEF"
+        }
     }
 
     /* ---------------------------------------------------------------- */
@@ -639,7 +721,7 @@ class DnsResolver(
             val addr = bootstrapResolve(host)
                 ?: throw IOException("адрес DoT-сервера $host не определён")
             val s = SSLSocketFactory.getDefault().createSocket() as SSLSocket
-            protector.protect(s)
+            ensureIsolated(protector.protect(s), "DoT-сокет", s)
             s.connect(InetSocketAddress(addr, port), CONNECT_TIMEOUT_MS)
             s.soTimeout = READ_TIMEOUT_MS
             s.tcpNoDelay = true

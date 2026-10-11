@@ -87,20 +87,16 @@ class Cidr private constructor(val bytes: ByteArray, val prefix: Int) {
             if (t.isEmpty() || t.startsWith("#") || t.startsWith(";")) return null
             val slash = t.indexOf('/')
             val ipPart = if (slash >= 0) t.substring(0, slash) else t
-            val addr = try {
-                InetAddress.getByName(stripBrackets(ipPart))
-            } catch (e: Exception) {
-                return null
-            }
+            // Строго литерал, без DNS: InetAddress.getByName() для не-литерала
+            // уходил в резолв на потоке парсинга списков (в т.ч. в UI).
+            // Имя хоста в ipset — невалидная строка, пропускаем.
+            val addr = dev.rubcut.zapret.core.net.IpLiterals.parse(ipPart) ?: return null
             val raw = addr.address ?: return null
             val maxPrefix = raw.size * 8
             val prefix = if (slash >= 0) t.substring(slash + 1).toIntOrNull() ?: maxPrefix else maxPrefix
             if (prefix < 0 || prefix > maxPrefix) return null
             return Cidr(raw, prefix)
         }
-
-        private fun stripBrackets(s: String): String =
-            if (s.length > 1 && s.startsWith("[") && s.endsWith("]")) s.substring(1, s.length - 1) else s
     }
 }
 
@@ -132,6 +128,11 @@ class IpMatcher private constructor(val cidrs: List<Cidr>) {
 /**
  * Таблица hosts, применяемая внутри туннеля на этапе разрешения имён.
  * Синтаксис: `IP домен [домен2 …]`, допускаются маски вида `*.example.com`.
+ *
+ * ВНИМАНИЕ — префикс `*` значит разное в разных списках: в [HostMatcher]
+ * (`*.example` — аналог --hostlist-domains) это ТОЧНОЕ совпадение, а здесь
+ * (`*.example.com` в hosts-файле) — поддомены (сам домен не матчится).
+ * Это не баг, а две разные конвенции форматов; обе зафиксированы тестами.
  */
 class HostsTable private constructor(
     private val exact: Map<String, List<InetAddress>>,
@@ -171,17 +172,19 @@ class HostsTable private constructor(
                 val ipText = parts[0].let {
                     if (it.length > 1 && it.startsWith("[") && it.endsWith("]")) it.substring(1, it.length - 1) else it
                 }
-                val addr = try {
-                    InetAddress.getByName(ipText)
-                } catch (e: Exception) {
-                    continue
-                }
+                // Строго литерал: getByName для имени уходил бы в DNS.
+                val addr = dev.rubcut.zapret.core.net.IpLiterals.parse(ipText) ?: continue
                 for (i in 1 until parts.size) {
                     val name = parts[i].lowercase()
                     if (name.startsWith("*.")) {
                         wild += name.substring(1) to listOf(addr)
                     } else if (name.startsWith("*")) {
-                        wild += name.substring(1) to listOf(addr)
+                        // Голый `*name` без точки — как в HostMatcher, точное
+                        // совпадение: суффикс без точки матчил бы и `badname`.
+                        val key = name.trimStart('*').trimEnd('.')
+                        if (key.isEmpty()) continue
+                        val prev = exact[key]
+                        exact[key] = if (prev == null) listOf(addr) else prev + addr
                     } else {
                         val key = name.trimEnd('.')
                         val prev = exact[key]

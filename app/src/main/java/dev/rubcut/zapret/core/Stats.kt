@@ -13,6 +13,7 @@ data class StatsSnapshot(
     val packetsDown: Long = 0L,
     val packetsUp: Long = 0L,
     val activeConnections: Int = 0,
+    val unisolatedSockets: Long = 0,
     val totalConnections: Long = 0L,
     val desyncedConnections: Long = 0L,
     val dnsQueries: Long = 0L,
@@ -34,6 +35,7 @@ object TrafficStats {
     private val dnsQueries = AtomicLong()
     private val blockedQuic = AtomicLong()
     private val droppedPackets = AtomicLong()
+    private val unisolatedSockets = AtomicLong()
 
     @Volatile
     var activeConnections: Int = 0
@@ -49,6 +51,7 @@ object TrafficStats {
         packetsDown.set(0); packetsUp.set(0)
         totalConnections.set(0); desyncedConnections.set(0)
         dnsQueries.set(0); blockedQuic.set(0); droppedPackets.set(0)
+        unisolatedSockets.set(0)
         activeConnections = 0
         startedAt = SystemClock.elapsedRealtime()
         publish(force = true)
@@ -64,6 +67,8 @@ object TrafficStats {
     fun up(bytes: Int) { bytesUp.addAndGet(bytes.toLong()); packetsUp.incrementAndGet(); publish(false) }
     fun connectionOpened() { totalConnections.incrementAndGet(); activeConnections++; publish(false) }
     fun connectionClosed() { activeConnections = (activeConnections - 1).coerceAtLeast(0); publish(false) }
+    /** Сокет ушёл в сеть без изоляции (мягкий режим, см. openUpstream). */
+    fun unisolated() { unisolatedSockets.incrementAndGet(); publish(false) }
     fun desynced() { desyncedConnections.incrementAndGet(); publish(false) }
     fun dnsQueried() { dnsQueries.incrementAndGet(); publish(false) }
     fun quicBlocked() { blockedQuic.incrementAndGet(); droppedPackets.incrementAndGet(); publish(false) }
@@ -81,6 +86,7 @@ object TrafficStats {
             packetsDown = packetsDown.get(),
             packetsUp = packetsUp.get(),
             activeConnections = activeConnections,
+            unisolatedSockets = unisolatedSockets.get(),
             totalConnections = totalConnections.get(),
             desyncedConnections = desyncedConnections.get(),
             dnsQueries = dnsQueries.get(),

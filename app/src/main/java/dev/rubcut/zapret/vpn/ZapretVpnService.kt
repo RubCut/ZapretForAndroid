@@ -196,8 +196,13 @@ class ZapretVpnService : VpnService() {
 
     private fun reportIsolation(bound: Boolean, prot: Boolean) {
         isolationSummary = "привязка к физической сети=$bound, protect=$prot"
-        if (isolationReported) return
+        // Пишем не один раз, а при КАЖДОЙ смене значений: флип true→false
+        // посреди работы — главный подозреваемый при внезапной гибели всех
+        // upstream-соединений, и молчать о нём нельзя.
+        if (isolationReported && lastBound == bound && lastProt == prot) return
         isolationReported = true
+        lastBound = bound
+        lastProt = prot
         LogManager.i(LogTag.VPN, "Изоляция upstream-сокетов: привязка к физической сети=$bound, protect=$prot")
         if (!bound && !prot) {
             LogManager.w("Upstream-сокеты НЕ изолированы от туннеля — возможен самозахват трафика")
@@ -227,6 +232,12 @@ class ZapretVpnService : VpnService() {
 
     @Volatile
     private var isolationReported = false
+
+    @Volatile
+    private var lastBound = true
+
+    @Volatile
+    private var lastProt = true
 
     @Volatile
     private var isolationSummary = "нет данных"

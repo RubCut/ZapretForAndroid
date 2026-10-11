@@ -255,10 +255,18 @@ class TcpConnection(
 
     private suspend fun openUpstream(): Socket {
         val socket = Socket()
-        // Fail-closed: неизолированный сокет петляет в собственный TUN.
         if (!stack.protector.protect(socket)) {
-            try { socket.close() } catch (_: Exception) {}
-            throw java.io.IOException("upstream TCP-сокет не изолирован от туннеля")
+            // МЯГКИЙ режим вместо жёсткого fail-closed: на части сетей/прошивок
+            // protect() spuriously возвращает false для TCP-сокетов (наблюдалось
+            // в бою: мгновенные RST ВСЕХ соединений при живом UDP/DoH), и throw
+            // здесь кирпичил весь туннель. Продолжаем как раньше (warn), но
+            // считаем такие сокеты и светим флипы изоляции в журнале —
+            // самозахват, если случится, будет виден, а не молчалив.
+            TrafficStats.unisolated()
+            val n = TrafficStats.snapshot.value.unisolatedSockets
+            if (n <= 3 || n % 100 == 0L) {
+                LogManager.w("upstream TCP без изоляции (№$n): продолжаю без неё")
+            }
         }
         socket.tcpNoDelay = true
         socket.keepAlive = false

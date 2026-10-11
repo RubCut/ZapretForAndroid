@@ -186,11 +186,12 @@ class UdpStack(
                 var sock: DatagramSocket? = null
                 try {
                     sock = DatagramSocket(null)
-                    // Fail-closed: неизолированный сокет петляет в собственный
-                    // TUN. Молча продолжать с warn нельзя — рвём сессию явно.
+                    // Мягкий режим (см. TcpConnection.openUpstream): жёсткий
+                    // throw здесь ронял бы весь UDP-релей и DNS на сетях, где
+                    // protect() spuriously возвращает false.
                     if (!protector.protect(sock)) {
-                        try { sock.close() } catch (_: Exception) {}
-                        throw java.io.IOException("upstream UDP-сокет не изолирован от туннеля")
+                        TrafficStats.unisolated()
+                        LogManager.w("upstream UDP без изоляции: продолжаю без неё")
                     }
                     // Не нулевой: нулевой таймаут означает блокировку навсегда,
                     // а нам нужно периодически отпускать поток пула (см. ниже).

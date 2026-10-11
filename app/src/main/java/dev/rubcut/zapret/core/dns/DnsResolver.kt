@@ -444,13 +444,16 @@ class DnsResolver(
 
 
     /**
-     * Fail-closed для изоляции (см. [failClosed]). Неизолированный upstream в
-     * туннеле петляет в собственный TUN — молча продолжать с warn нельзя.
+     * Мягкая изоляция (см. TcpConnection.openUpstream): жёсткий throw кирпичил
+     * соединения на сетях, где protect() spuriously возвращает false. Считаем
+     * такие сокеты и продолжаем; флипы значений видны в журнале сервиса.
+     * При failClosed=false (проверка DNS из UI без туннеля) — тихо продолжаем.
      */
     private fun ensureIsolated(ok: Boolean, what: String, socket: java.io.Closeable? = null) {
-        if (ok || !failClosed) return
-        try { socket?.close() } catch (_: Exception) {}
-        throw IOException("$what не изолирован от туннеля")
+        if (ok) return
+        if (!failClosed) return
+        dev.rubcut.zapret.core.TrafficStats.unisolated()
+        LogManager.d(LogTag.DNS, "$what без изоляции: продолжаю без неё")
     }
 
     /* ---------------------------------------------------------------- */

@@ -492,6 +492,10 @@ class DnsResolver(
         const val BYPASS_RETRY_MS = 60_000L
         /** Непредсказуемый TXID для UDP-запросов (защита от спуфа). */
         private val secureUdpRandom = java.security.SecureRandom()
+        /** Предел рекурсии CNAME в ответах DoH. */
+        const val MAX_CNAME_DEPTH = 4
+        /** Hex для urlEncode (уровень класса: companion во inner запрещён). */
+        const val URL_HEX = "0123456789ABCDEF"
 
         /**
          * Адреса крупнейших публичных DoH/DoT-серверов. Они десятилетиями не
@@ -668,16 +672,11 @@ class DnsResolver(
                 else {
                     for (b in c.toString().toByteArray(Charsets.UTF_8)) {
                         append('%')
-                        append(HEX[(b.toInt() and 0xFF) ushr 4])
-                        append(HEX[b.toInt() and 0x0F])
+                        append(URL_HEX[(b.toInt() and 0xFF) ushr 4])
+                        append(URL_HEX[b.toInt() and 0x0F])
                     }
                 }
             }
-        }
-
-        private companion object {
-            const val MAX_CNAME_DEPTH = 4
-            const val HEX = "0123456789ABCDEF"
         }
     }
 

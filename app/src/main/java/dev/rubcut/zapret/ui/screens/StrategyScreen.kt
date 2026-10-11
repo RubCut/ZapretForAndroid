@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,10 +23,14 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FilterAlt
+import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.ListAlt
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Speed
@@ -64,6 +69,8 @@ import androidx.navigation.NavHostController
 import dev.rubcut.zapret.R
 import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.HostSource
+import dev.rubcut.zapret.data.ProbeStatus
+import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.data.HostlistMode
 import dev.rubcut.zapret.data.IpsetMode
 import dev.rubcut.zapret.data.SplitPos
@@ -180,6 +187,41 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                         Spacer(Modifier.height(8.dp))
                         InfoBanner(apResult!!)
                     }
+                }
+            }
+
+            item {
+                // Список всех приёмов с отметкой «работает / не работает».
+                //
+                // Нужен помимо автоподбора по двум причинам. Первая: подбор идёт
+                // минуты и не всегда находит победителя (например, из-за одной
+                // подставленного DNS-адреса), а рабочий вариант пользователю уже
+                // известен. Вторая: значки показывают, ЧТО именно проверено, а не
+                // только «подбор завершён» — по списку видно, какие приёмы на
+                // этой сети отпадают.
+                val live by vm.candidateStatus.collectAsStateWithLifecycle()
+                val cfg by vm.config.collectAsStateWithLifecycle()
+                val status = if (live.isNotEmpty()) live else cfg.candidateStatus
+                val checkedAt = cfg.candidateCheckedAt
+                SectionCard(
+                    title = stringResource(R.string.candidates_title),
+                    icon = Icons.Rounded.ListAlt,
+                    subtitle = if (checkedAt > 0L) {
+                        stringResource(
+                            R.string.candidates_checked_at,
+                            android.text.format.DateFormat.format(
+                                "dd.MM HH:mm", checkedAt
+                            )
+                        )
+                    } else {
+                        stringResource(R.string.candidates_never_checked)
+                    }
+                ) {
+                    CandidateList(
+                        status = status,
+                        running = apRunningState(vm),
+                        onPick = { vm.applyCandidate(it) }
+                    )
                 }
             }
 
@@ -548,6 +590,81 @@ private fun RuleRow(
                     Spacer(Modifier.width(6.dp))
                     Text(stringResource(R.string.action_edit))
                 }
+            }
+        }
+    }
+}
+
+/** Идёт ли подбор прямо сейчас — значки нельзя менять в этот момент. */
+@Composable
+private fun apRunningState(vm: AppViewModel): Boolean {
+    val running by vm.autopilotRunning.collectAsStateWithLifecycle()
+    return running
+}
+
+/**
+ * Список приёмов автоподбора: имя, отметка проверки и тап для применения.
+ *
+ * Значок отражает ФАКТИЧЕСКИЙ вердикт зонда, а не «первый неупавший»:
+ * `WORKS` — сервер ответил ServerHello, `FAILS` — проверяли и ответа не было,
+ * `UNKNOWN` — не проверяли. Различать последние два обязательно: иначе
+ * непроверенный приём выглядел бы как заведомо нерабочий.
+ */
+@Composable
+private fun CandidateList(
+    status: Map<String, ProbeStatus>,
+    running: Boolean,
+    onPick: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        for ((name, _) in StrategyAutopilot.CANDIDATES) {
+            val st = status[name] ?: ProbeStatus.UNKNOWN
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !running) { onPick(name) }
+                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = when (st) {
+                        ProbeStatus.WORKS -> Icons.Rounded.CheckCircle
+                        ProbeStatus.FAILS -> Icons.Rounded.Cancel
+                        ProbeStatus.UNKNOWN -> Icons.Rounded.HelpOutline
+                    },
+                    contentDescription = when (st) {
+                        ProbeStatus.WORKS -> stringResource(R.string.candidate_works)
+                        ProbeStatus.FAILS -> stringResource(R.string.candidate_fails)
+                        ProbeStatus.UNKNOWN -> stringResource(R.string.candidate_unknown)
+                    },
+                    tint = when (st) {
+                        ProbeStatus.WORKS -> MaterialTheme.colorScheme.primary
+                        ProbeStatus.FAILS -> MaterialTheme.colorScheme.error
+                        ProbeStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+                    },
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    stringResource(
+                        when (st) {
+                            ProbeStatus.WORKS -> R.string.candidate_works
+                            ProbeStatus.FAILS -> R.string.candidate_fails
+                            ProbeStatus.UNKNOWN -> R.string.candidate_unknown
+                        }
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when (st) {
+                        ProbeStatus.WORKS -> MaterialTheme.colorScheme.primary
+                        ProbeStatus.FAILS -> MaterialTheme.colorScheme.error
+                        ProbeStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+                    }
+                )
             }
         }
     }

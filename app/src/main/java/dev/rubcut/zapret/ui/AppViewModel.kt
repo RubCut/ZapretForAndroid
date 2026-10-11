@@ -15,6 +15,7 @@ import dev.rubcut.zapret.R
 import dev.rubcut.zapret.core.ConnectionLog
 import dev.rubcut.zapret.core.LogEntry
 import dev.rubcut.zapret.core.LogManager
+import dev.rubcut.zapret.core.LogTag
 import dev.rubcut.zapret.core.RecentConnection
 import dev.rubcut.zapret.core.SocketProtector
 import dev.rubcut.zapret.core.StatsSnapshot
@@ -29,6 +30,7 @@ import dev.rubcut.zapret.data.AppConfig
 import dev.rubcut.zapret.data.HostListStore
 import dev.rubcut.zapret.data.ThemeMode
 import dev.rubcut.zapret.data.Presets
+import dev.rubcut.zapret.data.ProbeStatus
 import dev.rubcut.zapret.data.ProfileId
 import dev.rubcut.zapret.data.StrategyRule
 import dev.rubcut.zapret.core.dns.DnsResult
@@ -70,6 +72,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * экран молчал бы минуты-полторы, выглядя как зависший.
      */
     val autopilotProgress = MutableStateFlow<String?>(null)
+
+    /**
+     * Живой статус кандидатов во время подбора.
+     *
+     * Отдельный поток, а не чтение из конфига: значки должны обновляться по ходу
+     * проверки, а не по её окончанию — иначе список молчит все десять минут, пока
+     * идёт перебор 21 кандидата.
+     */
+    val candidateStatus = MutableStateFlow<Map<String, ProbeStatus>>(emptyMap())
 
     /* ------------------------------ конфигурация ------------------------------ */
 
@@ -317,6 +328,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     (r as? DnsResult.Addresses)?.list ?: emptyList()
                 }
                 val current = config.value
+                // Статусы кандидатов копятся прямо во время подбора: показывать
+                // «работает/не работает» можно только по фактическим вердиктам,
+                // догадываться по «первому неупавшему» нельзя.
+                val seen = HashMap<String, Boolean>()
                 // По одному кандидату на хост: хосты блокируются по-разному, и
                 // общий кандидат либо не подходит никому, либо ломает тех, кто
                 // и так работает.
@@ -325,9 +340,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     lookup = lookup,
                     onProgress = { autopilotProgress.value = it },
                     lookupAll = lookupAll,
+                    onCandidate = { name, _, works ->
+                        // Сработавший на любом хосте кандидат остаётся рабочим:
+                        // разные хосты блокируются по-разному, и один
+                        // сработавший — уже достаточное основание для галочки.
+                        val merged = seen[name] == true || works
+                        seen[name] = merged
+                        candidateStatus.value = seen.toMap()
+                        merged
+                    },
                 )
                 val winner = perHost.values.firstOrNull()?.second
                 if (winner == null) {
+                    // Победителя нет, но вердикты по кандидатам уже получены и
+                    // полезны: сохраняем их в любом случае. Иначе неудачный
+                    // подбор стирал бы весь список значков — а это ровно тот
+                    // случай, когда список нужнее всего.
+                    persistCandidateStatus(seen)
                     autopilotResult.value = app.getString(R.string.autopilot_fail)
                 } else {
                     // Сохраняем стратегию целиком: усечение до 4 полей молча
@@ -352,6 +381,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             fakeTtl = winner.fakeTtl
                         ).withTunedPerHost(perHost, current.tcpPorts)
                     }
+                    // Статусы сохраняем в конфиг отдельно от применения
+                    // победителя: значки обязаны пережить перезапуск, иначе
+                    // после него весь список снова выглядит непроверенным.
+                    persistCandidateStatus(seen)
                     autopilotResult.value = app.getString(
                         R.string.autopilot_done,
                         perHost.values.first().first
@@ -369,6 +402,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 autopilotProgress.value = null
             }
         }
+    }
+
+    /**
+     * Сохраняет вердикты подбора в конфиг, чтобы значки в списке приёмов
+     * переживали перезапуск приложения.
+     */
+    private fun persistCandidateStatus(seen: Map<String, Boolean>) {
+        if (seen.isEmpty()) return
+        update {
+            it.copy(
+                candidateStatus = seen.mapValues { (_, v) ->
+                    if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
+                },
+                candidateCheckedAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    /**
+     * Применяет выбранный вручную приём ко всем хостам профиля.
+     *
+     * Это то, ради чего нужен список: подбор может ничего не найти (например,
+     * из-за одной подставленного DNS-адреса), а рабочий приём пользователь
+     * знает — или нашёл в списке по галочке с прошлого прогона.
+     */
+    fun applyCandidate(name: String) {
+        val strategy = StrategyAutopilot.CANDIDATES.firstOrNull { it.first == name }?.second ?: return
+        update {
+            it.copy(
+                profile = ProfileId.CUSTOM,
+                desync = strategy.desync,
+                splitPositions = strategy.splitPositions,
+                splitCustomPos = strategy.splitCustomPos,
+                splitDelayMs = strategy.splitDelayMs,
+                tlsrecParts = strategy.tlsrecParts,
+                wssizeEnabled = strategy.wssizeEnabled,
+                wssizePackets = strategy.wssizePackets,
+                wssizeWindow = strategy.wssizeWindow,
+                anyProtocol = strategy.anyProtocol,
+                sniCaseMix = strategy.sniCaseMix,
+                poisonEnabled = strategy.poisonEnabled,
+                poisonSni = strategy.poisonSni,
+                poisonDelayMs = strategy.poisonDelayMs,
+                urgentByte = strategy.urgentByte,
+                fakeTtl = strategy.fakeTtl,
+            )
+        }
+        LogManager.i(LogTag.DPI, "Применён приём вручную: $name")
+        snackbar.value = "Применено: $name"
     }
 
     /**

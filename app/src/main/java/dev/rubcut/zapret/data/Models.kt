@@ -145,6 +145,30 @@ enum class AccentPalette { EMERALD, SKY, VIOLET, AMBER, ROSE, TEAL }
 
 enum class AppScope { ALL, INCLUDE, EXCLUDE }
 
+/**
+ * Что известно про кандидата стратегии после автоподбора.
+ *
+ * Три состояния, а не два: «не проверен» и «проверен и не работает» — это
+ * разные вещи. Первый означает «подбора ещё не было», второй — «проверяли,
+ * ответа от сервера не было». Если бы значков было два, непроверенный кандидат
+ * выглядел бы как нерабочий, и список вводил бы в заблуждение.
+ */
+enum class ProbeStatus {
+    /** Автоподбор ещё не выполнялся — приёма не проверяли. */
+    UNKNOWN,
+
+    /** Сервер ответил ServerHello: приём обходит фильтр. */
+    WORKS,
+
+    /** Проверяли, ответа от сервера не было. */
+    FAILS;
+
+    companion object {
+        fun fromToken(token: String?): ProbeStatus =
+            values().firstOrNull { it.name.equals(token, true) } ?: UNKNOWN
+    }
+}
+
 enum class ProfileId(val token: String) {
     OFF("off"),
     YOUTUBE("youtube"),
@@ -266,6 +290,22 @@ data class AppConfig(
     // Пустой список — действует общая стратегия выше.
     val rules: List<StrategyRule> = emptyList(),
 
+    /**
+     * Что автоподбор узнал про каждого кандидата: имя приёма → [ProbeStatus].
+     *
+     * Хранится в конфиге, а не только в памяти, ради одной вещи: значок
+     * «работает / не работает» должен пережить перезапуск приложения. Иначе
+     * после рестарта все кандидаты снова выглядят непроверенными, хотя подбор
+     * уже был выполнен и рабочий вариант известен.
+     *
+     * Ключ — имя кандидата из
+     * [dev.rubcut.zapret.core.stack.StrategyAutopilot.CANDIDATES].
+     */
+    val candidateStatus: Map<String, ProbeStatus> = emptyMap(),
+
+    /** Когда в последний раз прогонялся автоподбор (мс epoch), 0 — не было. */
+    val candidateCheckedAt: Long = 0L,
+
     // Сеть
     val ipv4: Boolean = true,
     val ipv6: Boolean = true,
@@ -358,6 +398,13 @@ data class AppConfig(
         for (r in rules) rulesArr.put(r.toJson())
         o.put("rules", rulesArr)
 
+        // Статусы кандидатов — ключи содержат пробелы и точки, поэтому
+        // сохраняются объектом: JSON-массив пар здесь неуместен.
+        val candObj = JSONObject()
+        for ((k, v) in candidateStatus) candObj.put(k, v.name)
+        o.put("candidateStatus", candObj)
+        o.put("candidateCheckedAt", candidateCheckedAt)
+
         o.put("ipv4", ipv4)
         o.put("ipv6", ipv6)
         o.put("mtu", mtu)
@@ -427,6 +474,13 @@ data class AppConfig(
                 rules = o.optJSONArray("rules")?.let { arr ->
                     (0 until arr.length()).mapNotNull { i -> StrategyRule.fromJson(arr.optJSONObject(i)) }
                 } ?: emptyList(),
+
+                candidateStatus = o.optJSONObject("candidateStatus")?.let { obj ->
+                    obj.keys().asSequence().associateWith { k ->
+                        ProbeStatus.fromToken(obj.optString(k, null))
+                    }
+                } ?: emptyMap(),
+                candidateCheckedAt = o.optLong("candidateCheckedAt", d.candidateCheckedAt),
 
                 ipv4 = o.optBoolean("ipv4", d.ipv4),
                 ipv6 = o.optBoolean("ipv6", d.ipv6),

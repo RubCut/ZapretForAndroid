@@ -369,6 +369,12 @@
     <string name="settings_subtitle">Тема, акцент, автозапуск, экспорт конфигурации</string>
     <string name="about_subtitle">Возможности без root, ограничения, лицензии</string>
     <string name="autopilot_title">Автоподбор стратегии</string>
+    <string name="candidates_title">Приёмы и их работоспособность</string>
+    <string name="candidates_checked_at">Проверено %1$s · нажмите на приём, чтобы применить</string>
+    <string name="candidates_never_checked">Ещё не проверялись. Запустите автоподбор или нажмите на приём вручную.</string>
+    <string name="candidate_works">работает</string>
+    <string name="candidate_fails">не работает</string>
+    <string name="candidate_unknown">не проверен</string>
     <string name="autopilot_hint">Проверяет кандидатов на живом туннеле: через собственный стек отправляется настоящий TLS ClientHello, и побеждает стратегия, на которую сервер ответил ServerHello. Пассивный режим проверяется первым.</string>
     <string name="autopilot_start">Подобрать</string>
     <string name="autopilot_running">Проверяю кандидатов…</string>

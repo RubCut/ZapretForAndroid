@@ -350,6 +350,12 @@
     <string name="settings_subtitle">Theme, accent, autostart, configuration export</string>
     <string name="about_subtitle">Root-free capabilities, limitations, licences</string>
     <string name="autopilot_title">Strategy auto-tune</string>
+    <string name="candidates_title">Techniques and whether they work</string>
+    <string name="candidates_checked_at">Checked %1$s · tap a technique to apply it</string>
+    <string name="candidates_never_checked">Not checked yet. Run auto-tune or tap a technique to apply it.</string>
+    <string name="candidate_works">works</string>
+    <string name="candidate_fails">does not work</string>
+    <string name="candidate_unknown">not checked</string>
     <string name="autopilot_hint">Probes candidates on the live tunnel: a real TLS ClientHello is sent through our own stack, and the strategy that gets a ServerHello back wins. Passive mode is tested first.</string>
     <string name="autopilot_start">Tune now</string>
     <string name="autopilot_running">Probing…</string>

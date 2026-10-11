@@ -512,6 +512,14 @@ class StrategyAutopilot(private val stack: TcpStack) {
          * адреса даже не пробовались.
          */
         lookupAll: (suspend (String) -> List<InetAddress>)? = null,
+        /**
+         * Вердикт по каждому проверенному кандидату.
+         *
+         * Вызывается для каждого зонда. Возвращает прежнее значение по этому
+         * кандидату (null, если он ещё не проверялся) — так вызывающая может
+         * вести счётчик сам, не заводя вторую структуру.
+         */
+        onCandidate: (name: String, strategy: Strategy, works: Boolean) -> Boolean? = { _, _, _ -> null },
     ): Map<String, Pair<String, Strategy>> {
         val out = LinkedHashMap<String, Pair<String, Strategy>>()
         val total = CANDIDATES.size
@@ -544,7 +552,16 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     val (name, strategy) = candidate
                     onProgress("$host · ${index + 1}/$total · $name$suffix")
                     LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name$suffix")
-                    if (probe(addr, 443, host, strategy, perHostTimeoutMs)) {
+                    val ok = probe(addr, 443, host, strategy, perHostTimeoutMs)
+                    // Вердикт по КАЖДОМУ кандидату, а не только по победителю:
+                    // без него нельзя показать в списке, кто не сработал, и
+                    // сравнить приёмы между собой.
+                    val key = name.substringBefore(" [")
+                    val prev = onCandidate(key, strategy, ok)
+                    if (ok) {
+                        // Кандидат сработал хотя бы на одном адресе — помечаем
+                        // его рабочим навсегда в этом прогоне.
+                        if (prev != true) onCandidate(key, strategy, true)
                         out[host] = "$name$suffix" to strategy
                         onProgress("$host: подошло «$name»$suffix")
                         LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»$suffix")

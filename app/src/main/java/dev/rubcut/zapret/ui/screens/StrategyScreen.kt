@@ -29,6 +29,8 @@ import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FilterAlt
 import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.ListAlt
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Save
@@ -200,24 +202,22 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                 // этой сети отпадают.
                 val live by vm.candidateStatus.collectAsStateWithLifecycle()
                 val cfg by vm.config.collectAsStateWithLifecycle()
-                val status = if (live.isNotEmpty()) live else cfg.candidateStatus
-                val checkedAt = cfg.candidateCheckedAt
+                // Живые статусы — по ходу подбора; сохранённые — после рестарта.
+                // Сливаем: живой прогон дополняет сохранённое, а не затирает.
+                val savedStatus = cfg.candidateStatus
+                val status: Map<String, Map<String, ProbeStatus>> =
+                    (savedStatus.keys + live.keys).associateWith { host ->
+                        (savedStatus[host] ?: emptyMap()) + (live[host] ?: emptyMap())
+                    }
+                val times = cfg.candidateCheckedAt
                 SectionCard(
                     title = stringResource(R.string.candidates_title),
                     icon = Icons.Rounded.ListAlt,
-                    subtitle = if (checkedAt > 0L) {
-                        stringResource(
-                            R.string.candidates_checked_at,
-                            android.text.format.DateFormat.format(
-                                "dd.MM HH:mm", checkedAt
-                            )
-                        )
-                    } else {
-                        stringResource(R.string.candidates_never_checked)
-                    }
+                    subtitle = stringResource(R.string.candidates_hint)
                 ) {
-                    CandidateList(
+                    CandidateGroups(
                         status = status,
+                        checkedAt = times,
                         running = apRunningState(vm),
                         onPick = { vm.applyCandidate(it) }
                     )
@@ -602,7 +602,11 @@ private fun apRunningState(vm: AppViewModel): Boolean {
 }
 
 /**
- * Список приёмов автоподбора: имя, отметка проверки и тап для применения.
+ * Группы приёмов по хостам: шапка раскрывается, внутри — приёмы с отметками.
+ *
+ * Группировка обязательна, потому что хосты блокируются по-разному: один и тот
+ * же приём на YouTube работает, а на Discord — нет. Общий список с одной
+ * галочкой на приём врал бы половине случаев.
  *
  * Значок отражает ФАКТИЧЕСКИЙ вердикт зонда, а не «первый неупавший»:
  * `WORKS` — сервер ответил ServerHello, `FAILS` — проверяли и ответа не было,
@@ -610,62 +614,134 @@ private fun apRunningState(vm: AppViewModel): Boolean {
  * непроверенный приём выглядел бы как заведомо нерабочий.
  */
 @Composable
-private fun CandidateList(
-    status: Map<String, ProbeStatus>,
+private fun CandidateGroups(
+    status: Map<String, Map<String, ProbeStatus>>,
+    checkedAt: Map<String, Long>,
     running: Boolean,
     onPick: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        for ((name, _) in StrategyAutopilot.CANDIDATES) {
-            val st = status[name] ?: ProbeStatus.UNKNOWN
+    if (status.isEmpty()) {
+        Text(
+            stringResource(R.string.candidates_never_checked),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // Первая группа раскрыта сразу: иначе за закрытыми шапками не видно,
+        // есть ли вообще хоть один рабочий приём.
+        var expanded by remember(status.keys) { mutableStateOf(setOf(status.keys.first())) }
+        for (host in status.keys.sorted()) {
+            val perHost = status[host] ?: emptyMap()
+            val works = perHost.count { it.value == ProbeStatus.WORKS }
+            val fails = perHost.count { it.value == ProbeStatus.FAILS }
+            val open = expanded.contains(host)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = !running) { onPick(name) }
+                    .clickable { expanded = if (open) expanded - host else expanded + host }
                     .padding(vertical = 10.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = when (st) {
-                        ProbeStatus.WORKS -> Icons.Rounded.CheckCircle
-                        ProbeStatus.FAILS -> Icons.Rounded.Cancel
-                        ProbeStatus.UNKNOWN -> Icons.Rounded.HelpOutline
-                    },
-                    contentDescription = when (st) {
-                        ProbeStatus.WORKS -> stringResource(R.string.candidate_works)
-                        ProbeStatus.FAILS -> stringResource(R.string.candidate_fails)
-                        ProbeStatus.UNKNOWN -> stringResource(R.string.candidate_unknown)
-                    },
-                    tint = when (st) {
-                        ProbeStatus.WORKS -> MaterialTheme.colorScheme.primary
-                        ProbeStatus.FAILS -> MaterialTheme.colorScheme.error
-                        ProbeStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
-                    },
+                    imageVector = if (open) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(12.dp))
-                Text(
-                    name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    stringResource(
-                        when (st) {
-                            ProbeStatus.WORKS -> R.string.candidate_works
-                            ProbeStatus.FAILS -> R.string.candidate_fails
-                            ProbeStatus.UNKNOWN -> R.string.candidate_unknown
-                        }
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = when (st) {
-                        ProbeStatus.WORKS -> MaterialTheme.colorScheme.primary
-                        ProbeStatus.FAILS -> MaterialTheme.colorScheme.error
-                        ProbeStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(host, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        stringResource(
+                            R.string.candidates_host_summary, works, fails,
+                            checkedAt[host]?.let {
+                                android.text.format.DateFormat.format("dd.MM HH:mm", it)
+                            } ?: "—"
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (works > 0) {
+                    Icon(
+                        imageVector = Icons.Rounded.CheckCircle,
+                        contentDescription = stringResource(R.string.candidate_works),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            if (open) {
+                Column(modifier = Modifier.padding(start = 8.dp)) {
+                    for ((name, _) in StrategyAutopilot.CANDIDATES) {
+                        CandidateRow(
+                            name = name,
+                            st = perHost[name] ?: ProbeStatus.UNKNOWN,
+                            running = running,
+                            onPick = onPick
+                        )
                     }
-                )
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun CandidateRow(
+    name: String,
+    st: ProbeStatus,
+    running: Boolean,
+    onPick: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !running) { onPick(name) }
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = when (st) {
+                ProbeStatus.WORKS -> Icons.Rounded.CheckCircle
+                ProbeStatus.FAILS -> Icons.Rounded.Cancel
+                ProbeStatus.UNKNOWN -> Icons.Rounded.HelpOutline
+            },
+            contentDescription = when (st) {
+                ProbeStatus.WORKS -> stringResource(R.string.candidate_works)
+                ProbeStatus.FAILS -> stringResource(R.string.candidate_fails)
+                ProbeStatus.UNKNOWN -> stringResource(R.string.candidate_unknown)
+            },
+            tint = when (st) {
+                ProbeStatus.WORKS -> MaterialTheme.colorScheme.primary
+                ProbeStatus.FAILS -> MaterialTheme.colorScheme.error
+                ProbeStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+            },
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            name,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            stringResource(
+                when (st) {
+                    ProbeStatus.WORKS -> R.string.candidate_works
+                    ProbeStatus.FAILS -> R.string.candidate_fails
+                    ProbeStatus.UNKNOWN -> R.string.candidate_unknown
+                }
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = when (st) {
+                ProbeStatus.WORKS -> MaterialTheme.colorScheme.primary
+                ProbeStatus.FAILS -> MaterialTheme.colorScheme.error
+                ProbeStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+            }
+        )
     }
 }
 

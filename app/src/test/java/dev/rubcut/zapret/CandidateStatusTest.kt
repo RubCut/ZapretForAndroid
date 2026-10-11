@@ -11,39 +11,56 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Список приёмов со значками «работает / не работает».
+ * Список приёмов со значками «работает / не работает», отдельно по хостам.
  *
- * Главное здесь — переживание перезапуска. Значки живут в конфиге, потому что
- * иначе после перезапуска приложения весь список снова выглядит непроверенным,
- * хотя подбор уже был выполнен и рабочий приём известен.
+ * Главное здесь — переживание перезапуска и честность группировки. Значки
+ * живут в конфиге, потому что иначе после перезапуска приложения весь список
+ * снова выглядит непроверенным, хотя подбор уже был выполнен. А группировка
+ * по хостам обязательна, потому что хосты блокируются по-разному: один и тот
+ * же приём на YouTube работает, а на Discord — нет.
  */
 class CandidateStatusTest {
 
-    /** Статусы обязаны пережить сериализацию в JSON. */
+    /** Статусы обязаны пережить сериализацию в JSON, отдельно по хостам. */
     @Test
     fun statusesSurviveJsonRoundTrip() {
         val cfg = AppConfig(
             profile = ProfileId.CUSTOM,
             candidateStatus = mapOf(
-                "disorder · середина домена (0+wm)" to ProbeStatus.WORKS,
-                "multisplit · первый байт" to ProbeStatus.FAILS,
+                "www.youtube.com" to mapOf(
+                    "disorder · середина домена (0+wm)" to ProbeStatus.WORKS,
+                    "multisplit · первый байт" to ProbeStatus.FAILS,
+                ),
+                "discord.com" to mapOf(
+                    "disorder · середина домена (0+wm)" to ProbeStatus.FAILS,
+                ),
             ),
-            candidateCheckedAt = 1_700_000_000_000L
+            candidateCheckedAt = mapOf(
+                "www.youtube.com" to 1_700_000_000_000L,
+                "discord.com" to 1_700_000_001_000L,
+            )
         )
         val json = JSONObject(cfg.toJson().toString())
         val back = AppConfig.fromJson(json)
 
         assertEquals(
-            "работающий приём обязан сохраниться",
+            "работающий приём на YouTube обязан сохраниться",
             ProbeStatus.WORKS,
-            back.candidateStatus["disorder · середина домена (0+wm)"]
+            back.candidateStatus["www.youtube.com"]?.get("disorder · середина домена (0+wm)")
         )
         assertEquals(
-            "неработающий приём обязан сохраниться",
+            "тот же приём на Discord обязан остаться нерабочим, а не заразиться",
             ProbeStatus.FAILS,
-            back.candidateStatus["multisplit · первый байт"]
+            back.candidateStatus["discord.com"]?.get("disorder · середина домена (0+wm)")
         )
-        assertEquals("время проверки обязано сохраниться", 1_700_000_000_000L, back.candidateCheckedAt)
+        assertEquals(
+            "время проверки YouTube обязано сохраниться",
+            1_700_000_000_000L, back.candidateCheckedAt["www.youtube.com"]
+        )
+        assertEquals(
+            "время проверки Discord обязано сохраниться",
+            1_700_000_001_000L, back.candidateCheckedAt["discord.com"]
+        )
     }
 
     /** Старый конфиг без этих полей обязан читаться без падения. */
@@ -55,7 +72,7 @@ class CandidateStatusTest {
         }
         val back = AppConfig.fromJson(old)
         assertTrue("статусы по умолчанию пусты", back.candidateStatus.isEmpty())
-        assertEquals("время по умолчанию 0", 0L, back.candidateCheckedAt)
+        assertTrue("время по умолчанию пусто", back.candidateCheckedAt.isEmpty())
     }
 
     /** Неизвестный токен обязан трактоваться как «не проверен», а не падать. */

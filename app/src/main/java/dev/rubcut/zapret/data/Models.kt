@@ -291,20 +291,21 @@ data class AppConfig(
     val rules: List<StrategyRule> = emptyList(),
 
     /**
-     * Что автоподбор узнал про каждого кандидата: имя приёма → [ProbeStatus].
+     * Что автоподбор узнал про каждого кандидата, отдельно по хостам.
+     *
+     * Внешний ключ — хост («www.youtube.com»), внутренний — имя приёма из
+     * [dev.rubcut.zapret.core.stack.StrategyAutopilot.CANDIDATES].
+     * Вложенность нужна, потому что хосты блокируются по-разному: один и тот
+     * же приём на YouTube работает, а на Discord — нет, и сводить это в одну
+     * галочку значило бы врать половине списка.
      *
      * Хранится в конфиге, а не только в памяти, ради одной вещи: значок
-     * «работает / не работает» должен пережить перезапуск приложения. Иначе
-     * после рестарта все кандидаты снова выглядят непроверенными, хотя подбор
-     * уже был выполнен и рабочий вариант известен.
-     *
-     * Ключ — имя кандидата из
-     * [dev.rubcut.zapret.core.stack.StrategyAutopilot.CANDIDATES].
+     * «работает / не работает» должен пережить перезапуск приложения.
      */
-    val candidateStatus: Map<String, ProbeStatus> = emptyMap(),
+    val candidateStatus: Map<String, Map<String, ProbeStatus>> = emptyMap(),
 
-    /** Когда в последний раз прогонялся автоподбор (мс epoch), 0 — не было. */
-    val candidateCheckedAt: Long = 0L,
+    /** Когда в последний раз прогонялся автоподбор по каждому хосту (мс epoch). */
+    val candidateCheckedAt: Map<String, Long> = emptyMap(),
 
     // Сеть
     val ipv4: Boolean = true,
@@ -398,12 +399,19 @@ data class AppConfig(
         for (r in rules) rulesArr.put(r.toJson())
         o.put("rules", rulesArr)
 
-        // Статусы кандидатов — ключи содержат пробелы и точки, поэтому
-        // сохраняются объектом: JSON-массив пар здесь неуместен.
+        // Статусы кандидатов: хост → (приём → статус), время — по хостам же.
+// Старый плоский формат (приём → статус без хоста) молча отбрасывается:
+// ему нет хоста для группировки, а гадать его нельзя.
         val candObj = JSONObject()
-        for ((k, v) in candidateStatus) candObj.put(k, v.name)
+        for ((host, m) in candidateStatus) {
+            val inner = JSONObject()
+            for ((k, v) in m) inner.put(k, v.name)
+            candObj.put(host, inner)
+        }
         o.put("candidateStatus", candObj)
-        o.put("candidateCheckedAt", candidateCheckedAt)
+        val timeObj = JSONObject()
+        for ((host, t) in candidateCheckedAt) timeObj.put(host, t)
+        o.put("candidateCheckedAt", timeObj)
 
         o.put("ipv4", ipv4)
         o.put("ipv6", ipv6)
@@ -476,11 +484,20 @@ data class AppConfig(
                 } ?: emptyList(),
 
                 candidateStatus = o.optJSONObject("candidateStatus")?.let { obj ->
-                    obj.keys().asSequence().associateWith { k ->
-                        ProbeStatus.fromToken(obj.optString(k, null))
-                    }
+                    obj.keys().asSequence().mapNotNull { host ->
+                        // Вложенный объект — новый формат; плоская строка —
+                        // остаток старой схемы, её отбрасываем (см. toJson).
+                        val inner = obj.optJSONObject(host) ?: return@mapNotNull null
+                        host to inner.keys().asSequence().associateWith { k ->
+                            ProbeStatus.fromToken(inner.optString(k, null))
+                        }
+                    }.toMap()
                 } ?: emptyMap(),
-                candidateCheckedAt = o.optLong("candidateCheckedAt", d.candidateCheckedAt),
+                candidateCheckedAt = o.optJSONObject("candidateCheckedAt")?.let { obj ->
+                    obj.keys().asSequence().mapNotNull { host ->
+                        host to obj.optLong(host, 0L)
+                    }.toMap()
+                } ?: emptyMap(),
 
                 ipv4 = o.optBoolean("ipv4", d.ipv4),
                 ipv6 = o.optBoolean("ipv6", d.ipv6),

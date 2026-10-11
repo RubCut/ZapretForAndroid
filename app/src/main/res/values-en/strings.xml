@@ -351,7 +351,8 @@
     <string name="about_subtitle">Root-free capabilities, limitations, licences</string>
     <string name="autopilot_title">Strategy auto-tune</string>
     <string name="candidates_title">Techniques and whether they work</string>
-    <string name="candidates_checked_at">Checked %1$s · tap a technique to apply it</string>
+    <string name="candidates_hint">Tap a group to expand. Tapping a technique applies it right away.</string>
+    <string name="candidates_host_summary">✓ %1$d · ✗ %2$d · checked %3$s</string>
     <string name="candidates_never_checked">Not checked yet. Run auto-tune or tap a technique to apply it.</string>
     <string name="candidate_works">works</string>
     <string name="candidate_fails">does not work</string>

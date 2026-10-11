@@ -80,7 +80,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * проверки, а не по её окончанию — иначе список молчит все десять минут, пока
      * идёт перебор 21 кандидата.
      */
-    val candidateStatus = MutableStateFlow<Map<String, ProbeStatus>>(emptyMap())
+    val candidateStatus = MutableStateFlow<Map<String, Map<String, ProbeStatus>>>(emptyMap())
 
     /* ------------------------------ конфигурация ------------------------------ */
 
@@ -331,7 +331,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Статусы кандидатов копятся прямо во время подбора: показывать
                 // «работает/не работает» можно только по фактическим вердиктам,
                 // догадываться по «первому неупавшему» нельзя.
-                val seen = HashMap<String, Boolean>()
+                // Вложенность «хост → приём» обязательна: один и тот же приём на
+                // YouTube работает, а на Discord — нет.
+                val seen = HashMap<String, HashMap<String, Boolean>>()
                 // По одному кандидату на хост: хосты блокируются по-разному, и
                 // общий кандидат либо не подходит никому, либо ломает тех, кто
                 // и так работает.
@@ -340,16 +342,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     lookup = lookup,
                     onProgress = { autopilotProgress.value = it },
                     lookupAll = lookupAll,
-                    onCandidate = { name, _, works ->
-                        // Сработавший на любом хосте кандидат остаётся рабочим:
-                        // разные хосты блокируются по-разному, и один
-                        // сработавший — уже достаточное основание для галочки.
-                        val merged = seen[name] == true || works
-                        seen[name] = merged
+                    onCandidate = { host, name, _, works ->
+                        // Сработавший кандидат остаётся рабочим: разные хосты
+                        // блокируются по-разному, и один сработавший — уже
+                        // достаточное основание для галочки именно по хосту.
+                        val perHostSeen = seen.getOrPut(host) { HashMap() }
+                        val merged = perHostSeen[name] == true || works
+                        perHostSeen[name] = merged
                         // В поток идут уже ProbeStatus, а не Boolean: значок в
                         // списке различает «не работает» и «не проверен».
-                        candidateStatus.value = seen.mapValues { (_, v) ->
-                            if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
+                        candidateStatus.value = seen.mapValues { (_, m) ->
+                            m.mapValues { (_, v) ->
+                                if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
+                            }
                         }
                         merged
                     },
@@ -412,14 +417,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Сохраняет вердикты подбора в конфиг, чтобы значки в списке приёмов
      * переживали перезапуск приложения.
      */
-    private fun persistCandidateStatus(seen: Map<String, Boolean>) {
+    private fun persistCandidateStatus(seen: Map<String, Map<String, Boolean>>) {
         if (seen.isEmpty()) return
+        val now = System.currentTimeMillis()
         update {
             it.copy(
-                candidateStatus = seen.mapValues { (_, v) ->
-                    if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
+                candidateStatus = seen.mapValues { (_, m) ->
+                    m.mapValues { (_, v) ->
+                        if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
+                    }
                 },
-                candidateCheckedAt = System.currentTimeMillis()
+                candidateCheckedAt = seen.keys.associateWith { now }
             )
         }
     }

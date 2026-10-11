@@ -513,13 +513,14 @@ class StrategyAutopilot(private val stack: TcpStack) {
          */
         lookupAll: (suspend (String) -> List<InetAddress>)? = null,
         /**
-         * Вердикт по каждому проверенному кандидату.
+         * Вердикт по каждому проверенному кандидату на этом хосте.
          *
          * Вызывается для каждого зонда. Возвращает прежнее значение по этому
-         * кандидату (null, если он ещё не проверялся) — так вызывающая может
-         * вести счётчик сам, не заводя вторую структуру.
+         * кандидату на этом хосте (null, если он ещё не проверялся) — так
+         * вызывающая может вести счётчик сам, не заводя вторую структуру.
          */
-        onCandidate: (name: String, strategy: Strategy, works: Boolean) -> Boolean? = { _, _, _ -> null },
+        onCandidate: (host: String, name: String, strategy: Strategy, works: Boolean) -> Boolean? =
+            { _, _, _, _ -> null },
     ): Map<String, Pair<String, Strategy>> {
         val out = LinkedHashMap<String, Pair<String, Strategy>>()
         val total = CANDIDATES.size
@@ -568,10 +569,10 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     // без него нельзя показать в списке, кто не сработал, и
                     // сравнить приёмы между собой.
                     val key = name.substringBefore(" [")
-                    val prev = onCandidate(key, strategy, ok)
+                    val prev = onCandidate(host, key, strategy, ok)
                     if (ok) {
                         // Кандидат сработал — помечаем его рабочим в этом прогоне.
-                        if (prev != true) onCandidate(key, strategy, true)
+                        if (prev != true) onCandidate(host, key, strategy, true)
                         winner = "$name$suffix" to strategy
                         onProgress("$host: подошло «$name»$suffix")
                         LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»$suffix")

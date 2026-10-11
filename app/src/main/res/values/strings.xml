@@ -370,7 +370,8 @@
     <string name="about_subtitle">Возможности без root, ограничения, лицензии</string>
     <string name="autopilot_title">Автоподбор стратегии</string>
     <string name="candidates_title">Приёмы и их работоспособность</string>
-    <string name="candidates_checked_at">Проверено %1$s · нажмите на приём, чтобы применить</string>
+    <string name="candidates_hint">Нажмите на группу, чтобы раскрыть. Тап по приёму применяет его сразу.</string>
+    <string name="candidates_host_summary">✓ %1$d · ✗ %2$d · проверено %3$s</string>
     <string name="candidates_never_checked">Ещё не проверялись. Запустите автоподбор или нажмите на приём вручную.</string>
     <string name="candidate_works">работает</string>
     <string name="candidate_fails">не работает</string>

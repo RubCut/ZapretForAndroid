@@ -125,6 +125,7 @@
     <string name="strategy_tcp_ports">TCP ports (--wf-tcp / --filter-tcp)</string>
     <string name="strategy_udp_ports">UDP ports (--wf-udp / --filter-udp)</string>
     <string name="strategy_ports_hint">zapret format: 80,443,2053,50000&#8211;50100. Empty means all ports.</string>
+    <string name="strategy_ports_invalid">Dropped invalid tokens: %1$s</string>
     <string name="strategy_hostlist_mode">Host list mode</string>
     <string name="hostlist_mode_off">Disabled (process everything)</string>
     <string name="hostlist_mode_include">Only listed (--hostlist)</string>

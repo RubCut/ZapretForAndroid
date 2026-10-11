@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -64,7 +65,7 @@ private const val EXAMPLE_ARGS = "--filter-tcp=443 --hostlist=list-google.txt --
 @Composable
 fun ArgsScreen(vm: AppViewModel, navController: NavHostController) {
     val cfg by vm.config.collectAsStateWithLifecycle()
-    var text by remember { mutableStateOf(vm.generatedArgs()) }
+    var text by rememberSaveable { mutableStateOf(vm.generatedArgs()) }
     var parsed by remember { mutableStateOf<ParseResult?>(null) }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current

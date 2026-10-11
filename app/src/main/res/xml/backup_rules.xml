@@ -2,4 +2,7 @@
 <full-backup-content>
     <include domain="sharedpref" path="." />
     <include domain="file" path="lists/" />
+    <!-- DataStore с AppConfig лежит в files/datastore: без этого конфиг
+         (профиль, правила, DNS) не переживал восстановление, а списки — да. -->
+    <include domain="file" path="datastore/" />
 </full-backup-content>

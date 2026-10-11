@@ -6,9 +6,11 @@ import dev.rubcut.zapret.core.LogTag
 import dev.rubcut.zapret.core.match.HostMatcher
 import dev.rubcut.zapret.core.match.HostsTable
 import dev.rubcut.zapret.core.match.IpMatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -60,7 +62,26 @@ class HostListStore(private val context: Context) {
     val snapshot: StateFlow<Snapshot> = _snapshot
     val current: Snapshot get() = _snapshot.value
 
+    private val _loaded = MutableStateFlow(false)
+    /** Списки прочитаны с диска и матчеры собраны. */
+    val loaded: StateFlow<Boolean> = _loaded
+
     private val texts = HashMap<Kind, String>()
+
+    /**
+     * Асинхронная загрузка: вызывается из AppGraph.init(), который идёт на
+     * главном потоке (Application.onCreate, Tile, Boot). Раньше loadBlocking()
+     * читал 5 файлов и парсил все матчеры на Main — ANR на медленном хранилище.
+     *
+     * Потребители (StrategyResolver) читают snapshot живым провайдером, поэтому
+     * туннель, поднятый до окончания загрузки, сам подхватит списки без рестарта.
+     */
+    fun loadAsync(scope: CoroutineScope) {
+        scope.launch(Dispatchers.IO) {
+            loadBlocking()
+            _loaded.value = true
+        }
+    }
 
     /** Синхронная загрузка — вызывается один раз при старте процесса. */
     fun loadBlocking() {

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.Lan
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -39,12 +40,14 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -54,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
+import android.content.Intent
 import dev.rubcut.zapret.BuildConfig
 import dev.rubcut.zapret.R
 import dev.rubcut.zapret.data.AppScope
@@ -63,6 +67,8 @@ import dev.rubcut.zapret.ui.components.ChipSelector
 import dev.rubcut.zapret.ui.components.SectionCard
 import dev.rubcut.zapret.ui.components.SliderRow
 import dev.rubcut.zapret.ui.components.SwitchRow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private data class AppEntry(val pkg: String, val label: String)
 
@@ -70,7 +76,7 @@ private data class AppEntry(val pkg: String, val label: String)
 @Composable
 fun NetworkScreen(vm: AppViewModel, navController: NavHostController) {
     val cfg by vm.config.collectAsStateWithLifecycle()
-    var picking by remember { mutableStateOf(false) }
+    var picking by rememberSaveable { mutableStateOf(false) }
     val unitBytes = stringResource(R.string.unit_bytes_short)
     val unitSec = stringResource(R.string.unit_sec_short)
     val unitKib = stringResource(R.string.unit_kib)
@@ -262,23 +268,34 @@ private fun AppPicker(
     var query by remember { mutableStateOf("") }
     var checked by remember { mutableStateOf(selected) }
 
-    val apps = remember {
-        runCatching {
-            val pm = context.packageManager
-            pm.getInstalledApplications(0)
-                .asSequence()
-                .filter { it.packageName != BuildConfig.APPLICATION_ID }
-                .mapNotNull { info ->
-                    val launch = runCatching { pm.getLaunchIntentForPackage(info.packageName) }.getOrNull()
-                    if (launch == null) return@mapNotNull null
-                    AppEntry(info.packageName, info.loadLabel(pm).toString())
-                }
-                .sortedBy { it.label.lowercase() }
-                .toList()
-        }.getOrElse { emptyList() }
+    // Список грузится на IO: раньше getInstalledApplications + loadLabel на
+    // сотнях пакетов выполнялись в remember на Main (ANR). Заодно ушли от
+    // QUERY_ALL_PACKAGES: queryIntentActivities покрывается <queries> в
+    // манифесте и достаточен для выбора области действия.
+    val appsOrNull by produceState<List<AppEntry>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val pm = context.packageManager
+                val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                pm.queryIntentActivities(main, 0)
+                    .asSequence()
+                    .mapNotNull { it.activityInfo?.applicationInfo }
+                    .filter { it.packageName != BuildConfig.APPLICATION_ID }
+                    .distinctBy { it.packageName }
+                    .mapNotNull { info ->
+                        val label = runCatching { info.loadLabel(pm).toString() }.getOrNull()
+                            ?: return@mapNotNull null
+                        AppEntry(info.packageName, label)
+                    }
+                    .sortedBy { it.label.lowercase() }
+                    .toList()
+            }.getOrElse { emptyList() }
+        }
     }
+    val apps = appsOrNull
 
-    val filtered = remember(apps, query) {
+    val filtered = remember(appsOrNull, query) {
+        val apps = appsOrNull ?: emptyList()
         if (query.isBlank()) apps
         else apps.filter {
             it.label.contains(query, ignoreCase = true) || it.pkg.contains(query, ignoreCase = true)
@@ -321,6 +338,18 @@ private fun AppPicker(
                 shape = MaterialTheme.shapes.large
             )
             LazyColumn(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+                if (apps == null) {
+                    item {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
                 items(filtered.size) { index ->
                     val app = filtered[index]
                     Row(
@@ -364,10 +393,14 @@ private fun AppPicker(
 @Composable
 private fun AppIcon(pkg: String) {
     val context = LocalContext.current
-    val bitmap = remember(pkg) {
-        runCatching {
-            context.packageManager.getApplicationIcon(pkg).toBitmap(64, 64).asImageBitmap()
-        }.getOrNull()
+    // Иконка грузится на IO: getApplicationIcon в remember на Main для каждой
+    // строки списка давал фризы на устройствах с сотнями приложений.
+    val bitmap: ImageBitmap? by produceState<ImageBitmap?>(initialValue = null, pkg) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getApplicationIcon(pkg).toBitmap(64, 64).asImageBitmap()
+            }.getOrNull()
+        }
     }
     Box(
         modifier = Modifier

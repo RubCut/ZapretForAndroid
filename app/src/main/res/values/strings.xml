@@ -130,6 +130,7 @@
     <string name="strategy_tcp_ports">TCP-порты (--wf-tcp / --filter-tcp)</string>
     <string name="strategy_udp_ports">UDP-порты (--wf-udp / --filter-udp)</string>
     <string name="strategy_ports_hint">Формат zapret: 80,443,2053,50000&#8211;50100. Пусто — все порты.</string>
+    <string name="strategy_ports_invalid">Отброшены неверные токены: %1$s</string>
     <string name="strategy_hostlist_mode">Режим списка хостов</string>
     <string name="hostlist_mode_off">Выключен (обрабатывать всё)</string>
     <string name="hostlist_mode_include">Только из списка (--hostlist)</string>

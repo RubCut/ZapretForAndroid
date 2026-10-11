@@ -77,8 +77,8 @@ private val dotHosts = listOf(
 fun DnsScreen(vm: AppViewModel, navController: NavHostController) {
     val cfg by vm.config.collectAsStateWithLifecycle()
     val snapshot by vm.listSnapshot.collectAsStateWithLifecycle()
-    var testing by remember { mutableStateOf(false) }
-    var result by remember { mutableStateOf<String?>(null) }
+    var testing by rememberSaveable { mutableStateOf(false) }
+    var result by rememberSaveable { mutableStateOf<String?>(null) }
     val unitSec = stringResource(R.string.unit_sec_short)
     val hostsCount = remember(snapshot) {
         (snapshot.texts[HostListStore.Kind.HOSTS] ?: "").lineSequence()
@@ -141,7 +141,8 @@ fun DnsScreen(vm: AppViewModel, navController: NavHostController) {
                                 minLines = 3,
                                 monospace = true,
                                 placeholder = "1.1.1.1\n8.8.8.8:5353",
-                                supportingText = stringResource(R.string.dns_servers_hint)
+                                supportingText = stringResource(R.string.dns_servers_hint),
+                                deferred = true
                             )
                         }
 
@@ -159,7 +160,8 @@ fun DnsScreen(vm: AppViewModel, navController: NavHostController) {
                                 label = stringResource(R.string.dns_doh_url),
                                 value = cfg.dohUrl,
                                 onValueChange = { v -> vm.update { it.copy(dohUrl = v) } },
-                                monospace = true
+                                monospace = true,
+                                deferred = true
                             )
                         }
 
@@ -175,7 +177,8 @@ fun DnsScreen(vm: AppViewModel, navController: NavHostController) {
                                 label = stringResource(R.string.dns_dot_host),
                                 value = cfg.dotHost,
                                 onValueChange = { v -> vm.update { it.copy(dotHost = v) } },
-                                monospace = true
+                                monospace = true,
+                                deferred = true
                             )
                         }
 

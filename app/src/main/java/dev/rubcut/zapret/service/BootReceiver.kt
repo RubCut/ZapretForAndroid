@@ -25,10 +25,11 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
+        // Только задекларированное в манифесте: LOCKED_BOOT_COMPLETED требует
+        // directBootAware (у нас нет), QUICKBOOT_POWERON не задекларирован —
+        // обе ветки были мёртвыми/спуф-пригодными.
         if (action != Intent.ACTION_BOOT_COMPLETED &&
-            action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
-            action != Intent.ACTION_MY_PACKAGE_REPLACED &&
-            action != "android.intent.action.QUICKBOOT_POWERON"
+            action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) {
             return
         }

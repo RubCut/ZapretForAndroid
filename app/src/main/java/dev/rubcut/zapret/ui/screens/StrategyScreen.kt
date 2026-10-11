@@ -70,6 +70,7 @@ import androidx.navigation.NavHostController
 import dev.rubcut.zapret.R
 import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.HostSource
+import dev.rubcut.zapret.data.PortFilter
 import dev.rubcut.zapret.data.ProbeStatus
 import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.data.HostlistMode
@@ -174,6 +175,17 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                     ) {
                         Text(if (apRunning) stringResource(R.string.autopilot_running) else stringResource(R.string.autopilot_start))
                     }
+                    // Подбор идёт минуты и раньше вообще не отменялся:
+                    // кнопка гасит задачу (вердикты уже найденного сохранены).
+                    if (apRunning) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { vm.cancelAutopilot() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
+                    }
                     // Живой прогресс: подбор занимает минуты, и без этой строки
                     // экран выглядит зависшим на все время проверки.
                     if (apRunning && apProgress != null) {
@@ -201,9 +213,8 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                 // только «подбор завершён» — по списку видно, какие приёмы на
                 // этой сети отпадают.
                 val live by vm.candidateStatus.collectAsStateWithLifecycle()
-                val cfg by vm.config.collectAsStateWithLifecycle()
-                // Живые статусы — по ходу подбора; сохранённые — после рестарта.
-                // Сливаем: живой прогон дополняет сохранённое, а не затирает.
+                // cfgOuter: внешний cfg из шапки экрана — вторую подписку на
+                // тот же поток не заводим (теневая переменная + лишний эмит).
                 val savedStatus = cfg.candidateStatus
                 val status: Map<String, Map<String, ProbeStatus>> =
                     (savedStatus.keys + live.keys).associateWith { host ->
@@ -308,7 +319,9 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                         onValueChange = { v -> vm.updateStrategy { it.copy(tcpPorts = v) } },
                         monospace = true,
                         placeholder = "80,443,2053-2096",
-                        supportingText = stringResource(R.string.strategy_ports_hint)
+                        supportingText = stringResource(R.string.strategy_ports_hint),
+                        deferred = true,
+                        errorText = portError(cfg.tcpPorts)
                     )
                     Spacer(Modifier.height(10.dp))
                     LabeledTextField(
@@ -316,7 +329,9 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                         value = cfg.udpPorts,
                         onValueChange = { v -> vm.updateStrategy { it.copy(udpPorts = v) } },
                         monospace = true,
-                        placeholder = "443,19294-19344"
+                        placeholder = "443,19294-19344",
+                        deferred = true,
+                        errorText = portError(cfg.udpPorts)
                     )
                     Spacer(Modifier.height(14.dp))
                     Text(
@@ -594,6 +609,18 @@ private fun RuleRow(
     }
 }
 
+/**
+ * Текст ошибки для поля портов: какие токены будут отброшены разбором.
+ * Пустая строка и чистый ввод — без ошибки (пусто = «все порты»).
+ */
+@Composable
+private fun portError(spec: String): String? {
+    // remember(spec): разбор на каждую рекомпозицию не нужен.
+    val bad = remember(spec) { PortFilter.parseWithErrors(spec).second }
+    if (bad.isEmpty()) return null
+    return stringResource(dev.rubcut.zapret.R.string.strategy_ports_invalid, bad.joinToString(", "))
+}
+
 /** Идёт ли подбор прямо сейчас — значки нельзя менять в этот момент. */
 @Composable
 private fun apRunningState(vm: AppViewModel): Boolean {
@@ -629,9 +656,14 @@ private fun CandidateGroups(
         return
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        // Первая группа раскрыта сразу: иначе за закрытыми шапками не видно,
-        // есть ли вообще хоть один рабочий приём.
-        var expanded by remember(status.keys) { mutableStateOf(setOf(status.keys.first())) }
+        // Раскрытие переживает новые вердикты: раньше remember(status.keys)
+        // схлопывал группы при каждом persistCandidateStatus посреди подбора.
+        var expanded by remember { mutableStateOf(setOf<String>()) }
+        var autoExpanded by remember { mutableStateOf(false) }
+        if (!autoExpanded) {
+            status.keys.sorted().firstOrNull()?.let { expanded = setOf(it) }
+            autoExpanded = true
+        }
         for (host in status.keys.sorted()) {
             val perHost = status[host] ?: emptyMap()
             val works = perHost.count { it.value == ProbeStatus.WORKS }

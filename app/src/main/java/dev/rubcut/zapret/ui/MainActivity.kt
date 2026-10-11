@@ -1,6 +1,7 @@
 package dev.rubcut.zapret.ui
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -55,7 +56,11 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onVpnPermission = { intent: Intent -> vpnConsent.launch(intent) },
                     onRequestNotificationPermission = {
-                        notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        // POST_NOTIFICATIONS существует только с API 33: запрос
+                        // на старых версиях — пустой вызов в никуда.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        }
                     }
                 )
             }

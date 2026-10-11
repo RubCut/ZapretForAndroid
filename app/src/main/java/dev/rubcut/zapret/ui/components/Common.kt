@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.Card
@@ -142,6 +144,11 @@ fun SliderRow(
     format: (Float) -> String = { it.toInt().toString() },
     enabled: Boolean = true
 ) {
+    // Локальное положение ползунка: коммит — один раз по отпусканию.
+    // Раньше каждый пиксель драга писал в DataStore (fsync), очередь
+    // DataStore росла, UI дёргался на каждый эмит конфига.
+    var drag by remember { mutableStateOf<Float?>(null) }
+    val shown = drag ?: value
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -150,7 +157,7 @@ fun SliderRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
             Text(
-                format(value),
+                format(shown),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -164,8 +171,12 @@ fun SliderRow(
             )
         }
         Slider(
-            value = value,
-            onValueChange = onValueChange,
+            value = shown,
+            onValueChange = { drag = it },
+            onValueChangeFinished = {
+                drag?.let { onValueChange(it) }
+                drag = null
+            },
             valueRange = valueRange,
             steps = steps,
             enabled = enabled
@@ -278,17 +289,41 @@ fun LabeledTextField(
     placeholder: String? = null,
     monospace: Boolean = false,
     minLines: Int = 1,
-    supportingText: String? = null
+    supportingText: String? = null,
+    /**
+     * Отложенный коммит: черновик живёт локально, наружу уходит по Done
+     * или потере фокуса. Для полей, пишущих straight в DataStore (порты,
+     * DNS) — иначе каждый символ даёт запись с fsync. Редактор правил и
+     * списков держат свой черновик сами — там оставляем false.
+     */
+    deferred: Boolean = false,
+    /** Текст ошибки под полем (например, отброшенные токены портов). */
+    errorText: String? = null
 ) {
+    var draft by remember(value) { mutableStateOf(value) }
+    val shown = if (deferred) draft else value
     OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = modifier.fillMaxWidth(),
+        value = shown,
+        onValueChange = {
+            if (deferred) draft = it else onValueChange(it)
+        },
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (deferred) {
+                    Modifier.onFocusChanged { focus ->
+                        if (!focus.isFocused && draft != value) onValueChange(draft)
+                    }
+                } else Modifier
+            ),
         label = { Text(label) },
         placeholder = placeholder?.let { { Text(it) } },
         singleLine = singleLine,
         minLines = minLines,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        keyboardActions = KeyboardActions(
+            onDone = { if (deferred && draft != value) onValueChange(draft) }
+        ),
         textStyle = if (monospace) {
             MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
         } else MaterialTheme.typography.bodyMedium,
@@ -296,7 +331,8 @@ fun LabeledTextField(
             focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
         ),
-        supportingText = supportingText?.let { { Text(it, style = MaterialTheme.typography.bodySmall) } },
+        supportingText = (errorText ?: supportingText)?.let { { Text(it, style = MaterialTheme.typography.bodySmall) } },
+        isError = errorText != null,
         shape = MaterialTheme.shapes.medium
     )
 }

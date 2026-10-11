@@ -122,6 +122,10 @@ fun ZapretApp(
                 }
             }
         ) { padding ->
+            // Нижний отступ — это высота таббара: внутренние Scaffold экранов
+            // её не знают и сами паддят только системный nav-bar. Верхний
+            // инсет нулевой намеренно (contentWindowInsets выше): статус-бар
+            // обрабатывает каждый экран своим Scaffold, дубля здесь нет.
             NavHost(
                 navController = navController,
                 startDestination = Routes.HOME,
@@ -145,6 +149,11 @@ fun ZapretApp(
     }
 }
 
+/**
+ * Назад по стеку. На стартовом экране стек пуст — ничего не делаем и отдаём
+ * Back системе (выход из приложения). Раньше сюда дописывался дубликат HOME,
+ * и выход требовал двух нажатий Back вместо одного.
+ */
 internal fun NavHostController.back() {
-    if (!popBackStack()) navigate(Routes.HOME)
+    popBackStack()
 }

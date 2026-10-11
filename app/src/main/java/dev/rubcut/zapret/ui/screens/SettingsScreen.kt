@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -75,13 +77,23 @@ fun SettingsScreen(vm: AppViewModel, navController: NavHostController) {
     val context = LocalContext.current
     val supportsDynamic = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
+    val scope = rememberCoroutineScope()
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
-    ) { uri -> uri?.let { writeText(context, it, vm.exportJson()) } }
+    ) { uri ->
+        // I/O вне Main: экспорт/импорт шли в колбэке лаунчера на UI-потоке.
+        uri?.let { u -> scope.launch(Dispatchers.IO) { writeText(context, u, vm.exportJson()) } }
+    }
 
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let { u -> readText(context, u)?.let { json -> vm.importConfig(json) } } }
+    ) { uri ->
+        uri?.let { u ->
+            scope.launch(Dispatchers.IO) {
+                readText(context, u)?.let { json -> vm.importConfig(json) }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {

@@ -55,6 +55,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -88,7 +89,9 @@ import dev.rubcut.zapret.ui.Routes
 import dev.rubcut.zapret.ui.components.InfoBanner
 import dev.rubcut.zapret.ui.components.SectionCard
 import dev.rubcut.zapret.vpn.VpnState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -108,13 +111,10 @@ fun HomeScreen(
     val stats by vm.stats.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
 
-    var tick by remember { mutableIntStateOf(0) }
-    LaunchedEffect(state) {
-        while (true) {
-            delay(1000)
-            tick++
-        }
-    }
+    // Тика здесь больше нет: секундный тик жил в теле HomeScreen и
+    // рекомпозировал ВЕСЬ экран каждую секунду + два IPC в UI-потоке.
+    // Аптайм тикает внутри StatsGrid, права — в ChecklistStates (30 с, IO).
+    val perms by checklistPermissions(state)
 
     val running = state == VpnState.RUNNING
     val starting = state == VpnState.STARTING
@@ -190,7 +190,7 @@ fun HomeScreen(
                 }
             }
 
-            item { StatsGrid(stats, tick) }
+            item { StatsGrid(stats) }
 
             item {
                 val clipboard = LocalClipboardManager.current
@@ -233,15 +233,9 @@ fun HomeScreen(
 
             item {
                 ChecklistCard(
-                    notificationsGranted = remember(state, tick) {
-                        if (Build.VERSION.SDK_INT < 33) true
-                        else NotificationManagerCompat.from(context).areNotificationsEnabled()
-                    },
+                    notificationsGranted = perms.notif,
                     onGrantNotifications = onRequestNotificationPermission,
-                    batteryGranted = remember(state, tick) {
-                        val pm = context.getSystemService(PowerManager::class.java)
-                        pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
-                    },
+                    batteryGranted = perms.battery,
                     onBattery = {
                         runCatching {
                             val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -373,8 +367,48 @@ private fun PowerCard(running: Boolean, starting: Boolean, onClick: () -> Unit) 
     }
 }
 
+private data class PermState(val notif: Boolean, val battery: Boolean)
+
+/**
+ * Состояние чек-листа разрешений: binder-запросы идут на IO и не чаще раза
+ * в 30 с (плюс при смене состояния туннеля). Раньше два IPC выполнялись в
+ * UI-потоке каждую секунду вместе с полным рекомпозом экрана.
+ */
 @Composable
-private fun StatsGrid(stats: StatsSnapshot, tick: Int) {
+private fun checklistPermissions(state: VpnState): PermState {
+    val context = LocalContext.current
+    return produceState(initialValue = PermState(true, false), key1 = state) {
+        while (true) {
+            value = withContext(Dispatchers.IO) {
+                val notif = if (Build.VERSION.SDK_INT < 33) {
+                    true
+                } else {
+                    runCatching {
+                        NotificationManagerCompat.from(context).areNotificationsEnabled()
+                    }.getOrDefault(true)
+                }
+                val battery = runCatching {
+                    val pm = context.getSystemService(PowerManager::class.java)
+                    pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+                }.getOrDefault(false)
+                PermState(notif, battery)
+            }
+            delay(30_000)
+        }
+    }.value
+}
+
+@Composable
+private fun StatsGrid(stats: StatsSnapshot) {
+    // Секундный тик аптайма живёт здесь, а не в теле экрана: рекомпозирует
+    // только сетку статистики.
+    var tick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            tick++
+        }
+    }
     val scheme = MaterialTheme.colorScheme
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

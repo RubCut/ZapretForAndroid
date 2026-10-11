@@ -41,6 +41,7 @@ import dev.rubcut.zapret.vpn.VpnController
 import dev.rubcut.zapret.vpn.VpnState
 import dev.rubcut.zapret.vpn.ZapretVpnService
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -60,11 +61,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val recent: StateFlow<List<RecentConnection>> = ConnectionLog.entries
     val logs: StateFlow<List<LogEntry>> = LogManager.entries
 
-    val snackbar = MutableStateFlow<String?>(null)
+    private val _snackbar = MutableStateFlow<String?>(null)
+    val snackbar: StateFlow<String?> = _snackbar
 
     /** Автоподбор стратегий: состояние и результат для экрана «Стратегия». */
-    val autopilotRunning = MutableStateFlow(false)
-    val autopilotResult = MutableStateFlow<String?>(null)
+    private val _autopilotRunning = MutableStateFlow(false)
+    val autopilotRunning: StateFlow<Boolean> = _autopilotRunning
+    private val _autopilotResult = MutableStateFlow<String?>(null)
+    val autopilotResult: StateFlow<String?> = _autopilotResult
 
     /**
      * Живой прогресс подбора: какой хост и какой кандидат проверяются сейчас.
@@ -72,7 +76,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Подбор идёт до 12 кандидатов на каждый хост с таймаутом 6 с, и без этого
      * экран молчал бы минуты-полторы, выглядя как зависший.
      */
-    val autopilotProgress = MutableStateFlow<String?>(null)
+    private val _autopilotProgress = MutableStateFlow<String?>(null)
+    val autopilotProgress: StateFlow<String?> = _autopilotProgress
 
     /**
      * Живой статус кандидатов во время подбора.
@@ -81,7 +86,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * проверки, а не по её окончанию — иначе список молчит все десять минут, пока
      * идёт перебор 21 кандидата.
      */
-    val candidateStatus = MutableStateFlow<Map<String, Map<String, ProbeStatus>>>(emptyMap())
+    private val _candidateStatus = MutableStateFlow<Map<String, Map<String, ProbeStatus>>>(emptyMap())
+    val candidateStatus: StateFlow<Map<String, Map<String, ProbeStatus>>> = _candidateStatus
+
+    /** Задача подбора: нужна кнопке «Отмена» — раньше подбор нельзя было остановить. */
+    private var autopilotJob: Job? = null
+
+    fun cancelAutopilot() {
+        autopilotJob?.cancel()
+        autopilotJob = null
+    }
 
     /* ------------------------------ конфигурация ------------------------------ */
 
@@ -258,13 +272,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stopTunnel(context: Context) = VpnController.stop(context)
 
-    fun toggleTunnel(context: Context): Boolean {
-        if (VpnController.isRunning) {
-            stopTunnel(context)
-            return true
-        }
-        return startTunnel(context)
-    }
+    fun toggleTunnel(context: Context): Boolean = VpnController.toggle(context)
 
     /**
      * Включение туннеля с гарантией, что профиль успеет смениться.
@@ -296,18 +304,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * блокирует без обработки, обрабатывать нечего.
      */
     fun runAutopilot() {
-        if (autopilotRunning.value) return
-        viewModelScope.launch {
+        if (_autopilotRunning.value) return
+        // invokeOnCompletion вместо зануления в finally: finally старого
+        // запуска гасил бы ссылку уже нового (cancel асинхронен).
+        val job = viewModelScope.launch {
             val app = getApplication<Application>()
             val svc = ZapretVpnService.instance
             val stack = svc?.probeStack
             if (stack == null) {
-                autopilotResult.value = app.getString(R.string.autopilot_need_vpn)
+                _autopilotResult.value = app.getString(R.string.autopilot_need_vpn)
                 return@launch
             }
-            autopilotRunning.value = true
-            autopilotResult.value = null
-            autopilotProgress.value = null
+            _autopilotRunning.value = true
+            _autopilotResult.value = null
+            _autopilotProgress.value = null
             try {
                 val hosts = when (config.value.profile) {
                     ProfileId.YOUTUBE -> listOf("www.youtube.com", "youtubei.googleapis.com")
@@ -344,7 +354,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val perHost = StrategyAutopilot(stack).tunePerHost(
                     hosts,
                     lookup = lookup,
-                    onProgress = { autopilotProgress.value = it },
+                    onProgress = { _autopilotProgress.value = it },
                     lookupAll = lookupAll,
                     onCandidate = { host, name, _, works ->
                         // Сработавший кандидат остаётся рабочим: разные хосты
@@ -355,7 +365,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         perHostSeen[name] = merged
                         // В поток идут уже ProbeStatus, а не Boolean: значок в
                         // списке различает «не работает» и «не проверен».
-                        candidateStatus.value = seen.mapValues { (_, m) ->
+                        _candidateStatus.value = seen.mapValues { (_, m) ->
                             m.mapValues { (_, v) ->
                                 if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
                             }
@@ -372,7 +382,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             update { cfg ->
                                 cfg.withTunedPerHost(foundSoFar, current.tcpPorts)
                             }
-                            snackbar.value = "Найдено для $host: ${winner.first}"
+                            _snackbar.value = "Найдено для $host: ${winner.first}"
                         }
                         persistCandidateStatus(seen)
                     },
@@ -384,7 +394,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // подбор стирал бы весь список значков — а это ровно тот
                     // случай, когда список нужнее всего.
                     persistCandidateStatus(seen)
-                    autopilotResult.value = app.getString(R.string.autopilot_fail)
+                    _autopilotResult.value = app.getString(R.string.autopilot_fail)
                 } else {
                     // Сохраняем стратегию целиком: усечение до 4 полей молча
                     // выбрасывало sniCaseMix/poison/wssize — победивший приём
@@ -412,7 +422,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // победителя: значки обязаны пережить перезапуск, иначе
                     // после него весь список снова выглядит непроверенным.
                     persistCandidateStatus(seen)
-                    autopilotResult.value = app.getString(
+                    _autopilotResult.value = app.getString(
                         R.string.autopilot_done,
                         perHost.values.first().first
                     )
@@ -423,12 +433,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 LogManager.w("Автоподбор не завершился: ${e.message}")
-                autopilotResult.value = app.getString(R.string.autopilot_fail)
+                _autopilotResult.value = app.getString(R.string.autopilot_fail)
             } finally {
-                autopilotRunning.value = false
-                autopilotProgress.value = null
+                _autopilotRunning.value = false
+                _autopilotProgress.value = null
             }
         }
+        autopilotJob = job
+        job.invokeOnCompletion { if (autopilotJob === job) autopilotJob = null }
     }
 
     /**
@@ -480,7 +492,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         LogManager.i(LogTag.DPI, "Применён приём вручную: $name")
-        snackbar.value = "Применено: $name"
+        _snackbar.value = "Применено: $name"
     }
 
     /**
@@ -507,7 +519,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun notify(message: String) {
-        snackbar.value = message
+        _snackbar.value = message
     }
 
     /**
@@ -521,11 +533,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Короткое подтверждение действия (то же сообщение в snackbar). */
     fun toast(message: String) {
-        snackbar.value = message
+        _snackbar.value = message
     }
 
     fun snackbarShown() {
-        snackbar.value = null
+        _snackbar.value = null
     }
 
     /* ------------------------------ проверка DNS ------------------------------ */

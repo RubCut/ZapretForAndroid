@@ -72,8 +72,8 @@ private val kinds = listOf(
 @Composable
 fun ListsScreen(vm: AppViewModel, navController: NavHostController) {
     val snapshot by vm.listSnapshot.collectAsStateWithLifecycle()
-    var tab by remember { mutableIntStateOf(0) }
-    var editing by remember { mutableStateOf(false) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var editing by rememberSaveable { mutableStateOf(false) }
 
     val kind = kinds[tab].first
 

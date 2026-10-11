@@ -73,16 +73,24 @@ fun LogsScreen(vm: AppViewModel, navController: NavHostController) {
     val context = LocalContext.current
     val scheme = MaterialTheme.colorScheme
 
+    // Фильтр идёт по хвосту, а не по всему буферу: при активном туннеле
+    // записи идут десятками в секунду, и полный фильтр + перезапуск
+    // animateScrollToItem на каждую запись не давали скроллу осесть.
     val visible = remember(entries, filter, errorsOnly, paused, frozen) {
         val source = if (paused) frozen else entries
-        source.filter { entry ->
+        val tail = if (source.size > MAX_LOG_ROWS) source.takeLast(MAX_LOG_ROWS) else source
+        tail.filter { entry ->
             (filter == null || entry.tag == filter) &&
                 (!errorsOnly || entry.tag == LogTag.WARN || entry.tag == LogTag.ERR)
         }
     }
 
     LaunchedEffect(visible.size, autoscroll) {
-        if (autoscroll && visible.isNotEmpty()) {
+        if (!autoscroll || visible.isEmpty()) return@LaunchedEffect
+        // Скроллим только если пользователь уже внизу: иначе автопрокрутка
+        // вырывала бы чтение верхних записей при каждой новой строке.
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        if (lastVisible < 0 || lastVisible >= visible.size - 4) {
             listState.animateScrollToItem(visible.size - 1)
         }
     }
@@ -204,6 +212,9 @@ fun LogsScreen(vm: AppViewModel, navController: NavHostController) {
 }
 
 private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+
+/** Сколько строк держим на экране: буфер журнала больше, экран — нет. */
+private const val MAX_LOG_ROWS = 500
 
 private fun stamp(millis: Long): String = timeFormat.format(Date(millis))
 

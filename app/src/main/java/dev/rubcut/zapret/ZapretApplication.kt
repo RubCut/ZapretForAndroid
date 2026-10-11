@@ -36,7 +36,9 @@ object AppGraph {
         val app = context.applicationContext
         AppContextProvider.init(app)
         lists = HostListStore(app)
-        lists.loadBlocking()
+        // Списки грузятся фоном (см. loadAsync): init() обязан возвращаться
+        // быстро — его зовут onCreate/Boot/Tile на главном потоке.
+        lists.loadAsync(scope)
         config = ConfigRepository(app, scope)
         ready = true
         scope.launch {

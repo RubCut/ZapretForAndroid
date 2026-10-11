@@ -152,6 +152,18 @@ class DnsResolver(
         }
 
     /**
+     * Резолвер сейчас отвечает не через выбранный secure-режим, а через
+     * открытый резерв (окно после аварий DoH/DoT или форс от самоисцеления).
+     * Нужен баннеру «DNS не защищён» на главном экране. В строгом режиме
+     * отката нет по построению — всегда false.
+     */
+    fun inFallback(): Boolean {
+        val cfg = runCatching { configProvider() }.getOrNull() ?: return false
+        if (cfg.strictDns) return false
+        return forceFallbackServers || System.currentTimeMillis() < secureBypassUntil
+    }
+
+    /**
      * @return пара «результат» и «ответ пришёл с резервного (непроверенного)
      *   пути». Резерв — это системный UDP после аварии DoH/DoT: ответ там
      *   может подменить провайдер, поэтому вызывающий кэширует его недолго.
@@ -161,7 +173,9 @@ class DnsResolver(
         // DoH/DoT регулярно блокируется самим DPI. Ждать таймаут на каждом
         // запросе — значит выглядеть как «интернет не работает вовсе», поэтому
         // после серии аварий минутный интервал ходим сразу в системный DNS.
-        if (secureMode && System.currentTimeMillis() < secureBypassUntil) {
+        // ВНИМАНИЕ: это открытый текст провайдеру (имена утекают) — см. баннер
+        // inFallback и строгий режим strictDns без отката вообще.
+        if (secureMode && !cfg.strictDns && System.currentTimeMillis() < secureBypassUntil) {
             // «Навсегда» от самоисцеления — тоже с периодической проверкой:
             // раз в минуту пробуем основной режим, иначе DoH не вернулся бы
             // до рестарта даже после починки сети.
@@ -215,6 +229,13 @@ class DnsResolver(
             }
         }
         if (cfg.dnsMode == DnsMode.SYSTEM) return primary to false
+
+        // Строгий режим: никакого резерва — авария отдаёт SERVFAIL, а не ответ
+        // провайдера. Утечки имён нет по построению.
+        if (cfg.strictDns && secureMode) {
+            LogManager.w("DNS: строгий режим — ${cfg.dnsMode} недоступен, без отката (${(primary as? DnsResult.Failed)?.reason})")
+            return primary to false
+        }
 
         // Запасной путь. Без него любая авария DoH/DoT выглядела бы для
         // пользователя как «интернет не работает вовсе».
@@ -453,7 +474,12 @@ class DnsResolver(
         if (ok) return
         if (!failClosed) return
         dev.rubcut.zapret.core.TrafficStats.unisolated()
-        LogManager.d(LogTag.DNS, "$what без изоляции: продолжаю без неё")
+        // Warn, а не debug: молчание здесь прятало бы причину массовой гибели
+        // соединений. Троттлинг — как в TCP: первые 3 и каждый сотый.
+        val n = dev.rubcut.zapret.core.TrafficStats.snapshot.value.unisolatedSockets
+        if (n <= 3 || n % 100 == 0L) {
+            LogManager.w("$what без изоляции (№$n): продолжаю без неё")
+        }
     }
 
     /* ---------------------------------------------------------------- */
@@ -537,7 +563,17 @@ class DnsResolver(
         private var socket: SSLSocket? = null
         private var input: InputStream? = null
         private var output: OutputStream? = null
-        private var keepAlive = true
+        /**
+         * Какой диалект понимает конец.
+         *
+         * Пресеты на `/dns-query` (AdGuard, Yandex, Comss, NextDNS) говорят
+         * только RFC 8484, а JSON понимают не все. Поэтому сначала пробуем
+         * wire, и лишь если конец его отверг — JSON. Решение кэшируем, чтобы
+         * не платить двойной запрос на каждый lookup.
+         */
+        private var wireMode: WireMode = WireMode.UNKNOWN
+
+        private enum class WireMode { UNKNOWN, WIRE, JSON_ONLY }
 
         init {
             var u = url.trim()
@@ -589,22 +625,83 @@ class DnsResolver(
             socket = s
             input = BufferedInputStream(s.inputStream, 8192)
             output = s.outputStream
-            keepAlive = true
+            wireMode = WireMode.UNKNOWN
             LogManager.d(LogTag.DNS, "DoH: канал к $host (${addr.hostAddress}) установлен")
         }
 
         private fun doQuery(name: String, type: String, depth: Int = 0): List<String>? {
-            val out = output ?: return null
-            val inp = input ?: return null
-            val request = "GET " + path + "?name=" + urlEncode(name) + "&type=" + type + " HTTP/1.1\r\n" +
-                "Host: " + host + "\r\n" +
-                "Accept: application/dns-json\r\n" +
-                "User-Agent: Zapret-Android/1.0\r\n" +
-                "Connection: keep-alive\r\n\r\n"
-            out.write(request.toByteArray(Charsets.US_ASCII))
-            out.flush()
+            if (socket == null) connect()
+            val tnum = if (type == "AAAA") DnsType.AAAA else DnsType.A
+            // Сначала wire (RFC 8484): его понимают все концы, JSON — не все.
+            // null = конец wire отверг, идём в JSON. Исключения (транспорт умер)
+            // летят выше — там reconnect.
+            if (wireMode != WireMode.JSON_ONLY) {
+                val w = doWire(name, tnum)
+                if (w != null) return w
+            }
+            return doQueryJson(name, type, depth)
+        }
 
-            val status = readLine(inp) ?: return null
+        /**
+         * RFC 8484: POST `dns-message`, при отказе — GET `?dns=`.
+         *
+         * @return ответы; null — конец wire не говорит (пробуем JSON);
+         * @throws IOException транспорт мёртв (выше reconnect).
+         */
+        private fun doWire(name: String, tnum: Int): List<String>? {
+            val msg = DnsMessage.buildQuery(secureUdpRandom.nextInt(65536), name, tnum)
+            val id = txid(msg)
+            val common = "Host: $host\r\n" +
+                "User-Agent: Zapret-Android/1.0\r\n" +
+                "Connection: keep-alive\r\n"
+            // 1. POST
+            val post = sendHttp(
+                "POST $path HTTP/1.1\r\n$common" +
+                    "Accept: application/dns-message\r\n" +
+                    "Content-Type: application/dns-message\r\n" +
+                    "Content-Length: ${msg.size}\r\n\r\n",
+                msg
+            )
+            if (post.code == 200) {
+                val body = readHttpBody(post) ?: return null
+                wireMode = WireMode.WIRE
+                return wireToStrings(body, id)
+            }
+            // 2. GET ?dns= (устаревшие концы без POST)
+            val get = sendHttp(
+                "GET $path?dns=${base64UrlEncode(msg)} HTTP/1.1\r\n$common" +
+                    "Accept: application/dns-message\r\n\r\n",
+                null
+            )
+            if (get.code == 200) {
+                val body = readHttpBody(get) ?: return null
+                wireMode = WireMode.WIRE
+                return wireToStrings(body, id)
+            }
+            // Конец wire не говорит вовсе (чистый JSON-API): фиксируем, чтобы
+            // не платить двойной запрос на каждый lookup.
+            wireMode = WireMode.JSON_ONLY
+            return null
+        }
+
+        private fun wireToStrings(body: ByteArray, id: Int): List<String>? = when (val r = parseWireResponse(body, id)) {
+            is DnsWireResult.Addresses -> r.list.mapNotNull { it.hostAddress }
+            is DnsWireResult.Blocked -> emptyList()
+            is DnsWireResult.Failed -> {
+                LogManager.d(LogTag.DNS, "DoH wire: ${r.reason}")
+                null
+            }
+        }
+
+        private data class HttpReply(val code: Int, val headers: Map<String, String>)
+
+        private fun sendHttp(head: String, body: ByteArray?): HttpReply {
+            val out = output ?: throw IOException("нет канала")
+            val inp = input ?: throw IOException("нет канала")
+            out.write(head.toByteArray(Charsets.US_ASCII))
+            if (body != null) out.write(body)
+            out.flush()
+            val status = readLine(inp) ?: throw IOException("обрыв статуса")
             val code = status.split(' ').getOrNull(1)?.toIntOrNull() ?: -1
             val headers = HashMap<String, String>()
             while (true) {
@@ -613,16 +710,73 @@ class DnsResolver(
                 val c = line.indexOf(':')
                 if (c > 0) headers[line.substring(0, c).trim().lowercase()] = line.substring(c + 1).trim()
             }
-            if (code != 200) return null
+            return HttpReply(code, headers)
+        }
+
+        /**
+         * Тело ответа с проверкой framing.
+         *
+         * @return тело; null — неприменимо к wire (пробуем JSON).
+         * @throws IOException транспорт мёртв или framing битый (выше reconnect).
+         */
+        private fun readHttpBody(reply: HttpReply): ByteArray? {
+            val inp = input ?: throw IOException("нет канала")
+            if (reply.code != 200) {
+                // Не-200 съедать по длине не станем: рвём канал, следующий
+                // запрос (JSON или новый wire) поднимет свежий.
+                closeSocket()
+                return null
+            }
+            val cl = reply.headers["content-length"]?.toIntOrNull()
+            if (cl != null) {
+                checkContentLength(cl)
+                return readFixed(inp, cl) ?: throw IOException("обрыв тела")
+            }
+            if (reply.headers["transfer-encoding"]?.contains("chunked", true) == true) {
+                return readChunked(inp)
+            }
+            // Без framing на keep-alive тело не отделить от следующего ответа:
+            // читать «до закрытия» значило бы висеть 6 с на каждом запросе.
+            closeSocket()
+            return null
+        }
+
+        private fun doQueryJson(name: String, type: String, depth: Int = 0): List<String>? {
+            if (socket == null) connect()
+            val out = output ?: throw IOException("нет канала")
+            val inp = input ?: throw IOException("нет канала")
+            val request = "GET " + path + "?name=" + urlEncode(name) + "&type=" + type + " HTTP/1.1\r\n" +
+                "Host: " + host + "\r\n" +
+                "Accept: application/dns-json\r\n" +
+                "User-Agent: Zapret-Android/1.0\r\n" +
+                "Connection: keep-alive\r\n\r\n"
+            out.write(request.toByteArray(Charsets.US_ASCII))
+            out.flush()
+
+            val status = readLine(inp) ?: throw IOException("обрыв статуса")
+            val code = status.split(' ').getOrNull(1)?.toIntOrNull() ?: -1
+            val headers = HashMap<String, String>()
+            while (true) {
+                val line = readLine(inp) ?: break
+                if (line.isEmpty()) break
+                val c = line.indexOf(':')
+                if (c > 0) headers[line.substring(0, c).trim().lowercase()] = line.substring(c + 1).trim()
+            }
+            if (code != 200) {
+                closeSocket()
+                throw IOException("DoH JSON: HTTP $code")
+            }
 
             val body: ByteArray = when {
                 headers["content-length"]?.toIntOrNull() != null -> {
-                    readFixed(inp, headers["content-length"]!!.toInt()) ?: return null
+                    val cl = headers["content-length"]!!.toInt()
+                    checkContentLength(cl)
+                    readFixed(inp, cl) ?: throw IOException("обрыв тела")
                 }
                 headers["transfer-encoding"]?.contains("chunked", true) == true -> readChunked(inp)
                 else -> {
-                    keepAlive = false
-                    readAll(inp)
+                    closeSocket()
+                    throw IOException("нет framing тела")
                 }
             }
             return parseJson(String(body, Charsets.UTF_8), name, type, depth)
@@ -737,8 +891,8 @@ class DnsResolver(
         }
 
         private fun doQuery(name: String, type: Int): List<InetAddress>? {
-            val out = output ?: return null
-            val inp = input ?: return null
+            val out = output ?: throw IOException("нет канала")
+            val inp = input ?: throw IOException("нет канала")
             val id = (nextId++ and 0xFFFF)
             val msg = DnsMessage.buildQuery(id, name, type)
             out.write((msg.size ushr 8) and 0xFF)
@@ -746,16 +900,30 @@ class DnsResolver(
             out.write(msg)
             out.flush()
 
-            val hi = inp.read(); if (hi < 0) return null
-            val lo = inp.read(); if (lo < 0) return null
+            val hi = inp.read(); if (hi < 0) throw IOException("обрыв длины")
+            val lo = inp.read(); if (lo < 0) throw IOException("обрыв длины")
             val len = (hi shl 8) or lo
-            if (len <= 0 || len > 8192) return null
-            val resp = readFixed(inp, len) ?: return null
+            // Битая длина рассинхронизирует поток: дальше читался бы мусор как
+            // следующий ответ. Рвём канал — выше reconnect поднимет свежий.
+            if (len <= 0 || len > 8192) {
+                closeSocket()
+                throw IOException("битая длина DoT: $len")
+            }
+            val resp = readFixed(inp, len) ?: throw IOException("обрыв тела")
+            // TXID обязан совпасть: иначе это чужой/повторный пакет, а чтение
+            // дальше шло бы со сдвигом.
+            if (txidOf(resp) != id) {
+                closeSocket()
+                throw IOException("чужой TXID в DoT")
+            }
             val rcode = DnsMessage.rcode(resp, resp.size)
             if (rcode == 3) return emptyList()
             if (rcode != 0) return null
             return DnsMessage.parseAddresses(resp, resp.size)
         }
+
+        private fun txidOf(b: ByteArray): Int =
+            if (b.size < 2) -1 else ((b[0].toInt() and 0xFF) shl 8) or (b[1].toInt() and 0xFF)
 
         @Synchronized
         fun close() = closeSocket()
@@ -866,5 +1034,73 @@ suspend fun testResolver(resolver: DnsResolver, host: String = "www.google.com")
         is DnsResult.Addresses -> r.list.joinToString(", ") { it.hostAddress ?: "?" }
         is DnsResult.Blocked -> "заблокировано"
         is DnsResult.Failed -> r.reason
+    }
+}
+
+/** Потолок тела HTTP-ответа DoH: защита от OOM на врущем Content-Length. */
+internal const val MAX_HTTP_BODY = 256 * 1024
+
+/**
+ * Проверка Content-Length от сервера.
+ *
+ * @throws IllegalArgumentException отрицательный или больше [MAX_HTTP_BODY].
+ */
+internal fun checkContentLength(cl: Int): Int {
+    require(cl >= 0) { "отрицательный Content-Length: $cl" }
+    require(cl <= MAX_HTTP_BODY) { "тело $cl Б больше лимита $MAX_HTTP_BODY" }
+    return cl
+}
+
+/** base64url без паддинга (RFC 4648 §5): для GET `?dns=` в RFC 8484. */
+internal fun base64UrlEncode(data: ByteArray): String {
+    if (data.isEmpty()) return ""
+    val abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    val sb = StringBuilder((data.size * 4 + 2) / 3)
+    var i = 0
+    while (i + 3 <= data.size) {
+        val n = ((data[i].toInt() and 0xFF) shl 16) or
+            ((data[i + 1].toInt() and 0xFF) shl 8) or
+            (data[i + 2].toInt() and 0xFF)
+        sb.append(abc[(n ushr 18) and 0x3F]).append(abc[(n ushr 12) and 0x3F])
+            .append(abc[(n ushr 6) and 0x3F]).append(abc[n and 0x3F])
+        i += 3
+    }
+    val rem = data.size - i
+    if (rem == 1) {
+        val n = (data[i].toInt() and 0xFF) shl 16
+        sb.append(abc[(n ushr 18) and 0x3F]).append(abc[(n ushr 12) and 0x3F])
+    } else if (rem == 2) {
+        val n = ((data[i].toInt() and 0xFF) shl 16) or ((data[i + 1].toInt() and 0xFF) shl 8)
+        sb.append(abc[(n ushr 18) and 0x3F]).append(abc[(n ushr 12) and 0x3F])
+            .append(abc[(n ushr 6) and 0x3F])
+    }
+    return sb.toString()
+}
+
+internal sealed interface DnsWireResult {
+    class Addresses(val list: List<InetAddress>) : DnsWireResult
+    object Blocked : DnsWireResult
+    class Failed(val reason: String) : DnsWireResult
+}
+
+/**
+ * Разбор бинарного ответа DNS (RFC 8484 / DoT-фрейм без префикса длины).
+ *
+ * Проверяет TXID: ответ с чужим ID — это чужой/старый пакет, а не наш.
+ */
+internal fun parseWireResponse(body: ByteArray, queryId: Int): DnsWireResult {
+    if (body.size < 12) return DnsWireResult.Failed("короче заголовка: ${body.size}")
+    val id = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
+    if (id != queryId) return DnsWireResult.Failed("чужой TXID")
+    return when (DnsMessage.rcode(body, body.size)) {
+        3 -> DnsWireResult.Blocked
+        0 -> {
+            val addrs = runCatching { DnsMessage.parseAddresses(body, body.size) }.getOrElse {
+                return DnsWireResult.Failed("разбор: ${it.message}")
+            }
+            if (addrs.isEmpty()) DnsWireResult.Failed("пустой ответ")
+            else DnsWireResult.Addresses(addrs)
+        }
+        else -> DnsWireResult.Failed("rcode=${DnsMessage.rcode(body, body.size)}")
     }
 }

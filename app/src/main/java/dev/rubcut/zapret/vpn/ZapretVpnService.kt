@@ -1253,6 +1253,7 @@ class ZapretVpnService : VpnService() {
         return "прочитано из tun=${readCount.get()}, обработано=${handledCount.get()}, ошибок=${errorCount.get()}; " +
             "TCP установлено=${stack?.establishedTotal?.get() ?: 0}, упало=${stack?.failedTotal?.get() ?: 0}, " +
             "активных=${stack?.activeCount ?: 0}; udp-сессий=${udpStack?.activeCount ?: 0}; " +
+            "безИзоляции=${TrafficStats.snapshot.value.unisolatedSockets}; " +
             "mtu=$negotiatedMtu; в tun не записалось=${tcpStack?.packetWriter?.droppedCount ?: 0}; изоляция: $isolationSummary"
     }
 

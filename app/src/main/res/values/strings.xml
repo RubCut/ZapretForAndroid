@@ -189,6 +189,9 @@
     <string name="dns_dot_host">Хост DoT</string>
     <string name="dns_block_ads">Блокировать рекламу и трекинг</string>
     <string name="dns_block_ads_hint">Встроенный компактный список; отвечает NXDOMAIN. Не замена полноценному блокировщику.</string>
+    <string name="dns_strict_title">Строгий DNS: без отката в открытую</string>
+    <string name="dns_strict_hint">При недоступности DoH/DoT отдавать ошибку, а не ответ провайдера. Интернет при аварии встанет.</string>
+    <string name="dns_unprotected">DNS не защищён: идёт откат на открытый резолвер, имена видны провайдеру</string>
     <string name="dns_fake_protection">Защита от подмены ответов</string>
     <string name="dns_fake_protection_hint">Отбрасывает ответы, пришедшие не от настроенного резолвера, и повторяет запрос по защищённому каналу.</string>
     <string name="dns_cache">Кэшировать ответы</string>

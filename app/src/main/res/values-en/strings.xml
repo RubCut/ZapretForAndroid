@@ -182,6 +182,9 @@
     <string name="dns_dot_host">DoT host</string>
     <string name="dns_block_ads">Block ads and trackers</string>
     <string name="dns_block_ads_hint">A compact built-in list answered with NXDOMAIN. Not a replacement for a full blocker.</string>
+    <string name="dns_strict_title">Strict DNS: no plaintext fallback</string>
+    <string name="dns_strict_hint">On DoH/DoT outage return an error instead of the provider answer. Internet stalls during outages.</string>
+    <string name="dns_unprotected">DNS unprotected: falling back to plaintext resolver, names visible to provider</string>
     <string name="dns_fake_protection">Answer poisoning protection</string>
     <string name="dns_fake_protection_hint">Drops answers that did not come from the configured resolver and retries over a secure channel.</string>
     <string name="dns_cache">Cache answers</string>

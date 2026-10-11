@@ -115,6 +115,14 @@ fun HomeScreen(
     // рекомпозировал ВЕСЬ экран каждую секунду + два IPC в UI-потоке.
     // Аптайм тикает внутри StatsGrid, права — в ChecklistStates (30 с, IO).
     val perms = checklistPermissions(state)
+    // Баннер открытого DNS: дешёвый геттер без IPC, опрашиваем каждые 5 с.
+    // Рекомпозирует экран только при смене значения (Compose сверяет равенство).
+    val dnsOpen by produceState(initialValue = false) {
+        while (true) {
+            value = vm.dnsFallbackNow()
+            delay(5000)
+        }
+    }
 
     val running = state == VpnState.RUNNING
     val starting = state == VpnState.STARTING
@@ -197,6 +205,17 @@ fun HomeScreen(
             }
 
             item { StatsGrid(stats) }
+
+            // Плашка видна, только пока резолвер на открытом резерве: в обычном
+            // режиме и в строгом DNS (там отката нет) её нет.
+            if (dnsOpen) {
+                item {
+                    InfoBanner(
+                        text = stringResource(R.string.dns_unprotected),
+                        icon = Icons.Rounded.Dns
+                    )
+                }
+            }
 
             item {
                 val clipboard = LocalClipboardManager.current

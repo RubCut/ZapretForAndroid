@@ -298,6 +298,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearLogs() = LogManager.clear()
 
     /**
+     * Резолвер сейчас на открытом резерве? Читается баннером на главном экране.
+     *
+     * Дешёвый геттер без IPC — опрашивать можно часто.
+     */
+    fun dnsFallbackNow(): Boolean =
+        runCatching { ZapretVpnService.instance?.probeResolver?.inFallback() }.getOrDefault(false) == true
+
+    /**
      * Автоподбор стратегии обхода. Кандидаты прогоняются через живой стек
      * туннеля настоящим TLS ClientHello; побеждает тот, на которого сервер
      * ответил ServerHello. Пассивный режим проверяется первым: если DPI не

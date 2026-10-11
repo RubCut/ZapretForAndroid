@@ -351,6 +351,15 @@ data class AppConfig(
     val dnsBlockAds: Boolean = false,
     val dnsFakeProtection: Boolean = true,
     /**
+     * Строгий DNS: без отката на открытый резолвер.
+     *
+     * По умолчанию выключен: при мёртвом DoH/DoT интернет полностью
+     * останавливается, и это хуже понятного отката для большинства. Когда
+     * включён, авария secure-режима отдаёт SERVFAIL вместо ответа провайдера,
+     * а баннер на главном экране не нужен — откатов не бывает по построению.
+     */
+    val strictDns: Boolean = false,
+    /**
      * Версия схемы конфигурации. Нужна, чтобы обновление приложения могло
      * освежить устаревшие правила, не трогая настройки пользователя.
      * Без неё владельцы старых установок навсегда оставались на правилах
@@ -454,6 +463,7 @@ data class AppConfig(
         o.put("dnsCacheTtlSec", dnsCacheTtlSec)
         o.put("dnsBlockAds", dnsBlockAds)
         o.put("dnsFakeProtection", dnsFakeProtection)
+        o.put("strictDns", strictDns)
         o.put("configVersion", configVersion)
         return o
     }
@@ -545,6 +555,7 @@ data class AppConfig(
                 dnsCacheTtlSec = o.optInt("dnsCacheTtlSec", d.dnsCacheTtlSec),
                 dnsBlockAds = o.optBoolean("dnsBlockAds", d.dnsBlockAds),
                 dnsFakeProtection = o.optBoolean("dnsFakeProtection", d.dnsFakeProtection),
+                strictDns = o.optBoolean("strictDns", d.strictDns),
                 // Старого JSON без версии — это всегда версия 1.
                 configVersion = o.optInt("configVersion", 1)
             )

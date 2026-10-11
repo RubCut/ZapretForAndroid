@@ -248,6 +248,12 @@ fun DnsScreen(vm: AppViewModel, navController: NavHostController) {
                         checked = cfg.dnsBlockAds,
                         onCheckedChange = { v -> vm.update { it.copy(dnsBlockAds = v) } }
                     )
+                    SwitchRow(
+                        title = stringResource(R.string.dns_strict_title),
+                        subtitle = stringResource(R.string.dns_strict_hint),
+                        checked = cfg.strictDns,
+                        onCheckedChange = { v -> vm.update { it.copy(strictDns = v) } }
+                    )
                 }
             }
 

@@ -346,7 +346,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         // сработавший — уже достаточное основание для галочки.
                         val merged = seen[name] == true || works
                         seen[name] = merged
-                        candidateStatus.value = seen.toMap()
+                        // В поток идут уже ProbeStatus, а не Boolean: значок в
+                        // списке различает «не работает» и «не проверен».
+                        candidateStatus.value = seen.mapValues { (_, v) ->
+                            if (v) ProbeStatus.WORKS else ProbeStatus.FAILS
+                        }
                         merged
                     },
                 )

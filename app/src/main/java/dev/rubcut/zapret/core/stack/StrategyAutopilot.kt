@@ -13,6 +13,7 @@ import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -471,6 +472,13 @@ class StrategyAutopilot(private val stack: TcpStack) {
         private val secureProbeRandom = java.security.SecureRandom()
 
         /**
+         * Пауза с джиттером ±30%: зонды не должны идти метрономом — ровный
+         * ритм handshake палится лимитами проще, чем рваный.
+         */
+        fun jitter(baseMs: Long): Long =
+            (baseMs * (0.7 + Math.random() * 0.6)).toLong().coerceAtLeast(0L)
+
+        /**
          * Быстрый фильтр tap: пакет адресован нашему зонду (порт назначения
          * совпал и это TCP)? Разбор дешёвый, вызывается на каждый пакет tun.
          */
@@ -502,10 +510,14 @@ class StrategyAutopilot(private val stack: TcpStack) {
     suspend fun tune(
         hosts: List<String>,
         perHostTimeoutMs: Long = 6000,
-        lookup: suspend (String) -> InetAddress?
+        lookup: suspend (String) -> InetAddress?,
+        /** Пауза между зондами (см. tunePerHost): без неё лимит топит всех. */
+        interProbeDelayMs: Long = 900,
     ): TuneResult? {
         var best: TuneResult? = null
-        for ((name, strategy) in CANDIDATES) {
+        for ((ci, candidate) in CANDIDATES.withIndex()) {
+            val (name, strategy) = candidate
+            if (ci > 0) delay(jitter(interProbeDelayMs))
             var ok = 0
             for (host in hosts) {
                 val addr = withTimeoutOrNull(5000) { lookup(host) } ?: continue
@@ -561,6 +573,23 @@ class StrategyAutopilot(private val stack: TcpStack) {
          * «нашёл стратегию, пошёл проверять дальше, а какая была — не видно».
          */
         onHostDone: (host: String, winner: Pair<String, Strategy>?) -> Unit = { _, _ -> },
+        /**
+         * Пауза между зондами, мс (с джиттером ±30%).
+         *
+         * Двадцать один handshake подряд без передышки — это DDoS-профиль:
+         * сервер/DPI включает rate-limit, и ВСЕ последующие кандидаты получают
+         * тишину независимо от приёма. Без паузы подбор измерял терпение
+         * фильтра, а не качество стратегий.
+         */
+        interProbeDelayMs: Long = 900,
+        /**
+         * Сколько тишины (SILENCE) подряд терпим, прежде чем дать сети остыть
+         * ([silenceCooldownMs]). Живой трафик при этом идёт, а зонды молчат —
+         * классический признак сработавшего лимита, а не плохих приёмов.
+         */
+        silenceStreakLimit: Int = 6,
+        /** Пауза остывания при залипании на тишине, мс. Не чаще 2 раз на хост. */
+        silenceCooldownMs: Long = 10_000,
     ): Map<String, Pair<String, Strategy>> {
         val out = LinkedHashMap<String, Pair<String, Strategy>>()
         val total = CANDIDATES.size
@@ -597,13 +626,24 @@ class StrategyAutopilot(private val stack: TcpStack) {
             // приёма прогонялся на всех трёх адресах — 63 проверки вместо 21, и
             // подбор занимал минуты втрое дольше нужного.
             var winner: Pair<String, Strategy>? = null
+            var silenceStreak = 0
+            var cooldowns = 0
             for ((index, candidate) in CANDIDATES.withIndex()) {
                 val (name, strategy) = candidate
-                if (index > 0) onProgress("$host · ${index + 1}/$total · $name")
+                if (index > 0) {
+                    onProgress("$host · ${index + 1}/$total · $name")
+                    // Передышка между handshake: без неё DPI/сервер включает
+                    // rate-limit и топит всех остальных кандидатов.
+                    delay(jitter(interProbeDelayMs))
+                } else {
+                    onProgress("$host · 1/$total · $name")
+                }
                 LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name")
+                var hostVerdict: Verdict = Verdict.TIMEOUT
                 for (addr in addrs) {
                     val suffix = if (addrs.size > 1) " [${addr.hostAddress}]" else ""
                     val verdict = probeVerdict(addr, 443, host, strategy, perHostTimeoutMs)
+                    hostVerdict = verdict
                     val ok = verdict == Verdict.HELLO
                     // Вердикт по КАЖДОМУ кандидату, а не только по победителю:
                     // без него нельзя показать в списке, кто не сработал, и
@@ -638,6 +678,26 @@ class StrategyAutopilot(private val stack: TcpStack) {
                     )
                 }
                 if (winner != null) break
+                // Серия тишины подряд при живом трафике — почти наверняка
+                // сработавший rate-limit, а не плохие приёмы: даём сети остыть
+                // и сбрасываем счётчик. Не чаще 2 раз на хост, иначе подбор
+                // превращается в сплошное ожидание.
+                if (hostVerdict == Verdict.SILENCE) {
+                    silenceStreak++
+                    if (silenceStreak >= silenceStreakLimit && cooldowns < 2) {
+                        cooldowns++
+                        LogManager.i(
+                            LogTag.DPI,
+                            "Автоподбор: $host — тишина ×$silenceStreak, пауза ${silenceCooldownMs}мс " +
+                                "(остывание лимита $cooldowns/2)"
+                        )
+                        onProgress("$host: тишина ×$silenceStreak — пауза, сеть остывает…")
+                        silenceStreak = 0
+                        delay(silenceCooldownMs)
+                    }
+                } else {
+                    silenceStreak = 0
+                }
             }
             winner?.let { (name, strategy) -> out[host] = name to strategy }
             // Сообщаем сразу, не дожидаясь остальных хостов: если подбор
@@ -869,6 +929,9 @@ private suspend fun probeRecon(
 ): Pair<String, String>? {
     val passive = dev.rubcut.zapret.data.Strategy(desync = dev.rubcut.zapret.data.DesyncMode.NONE)
     val own = probeVerdict(addr, 443, host, passive, timeoutMs)
+    // Та же передышка, что между кандидатами: два handshake подряд в одну
+    // секунду — уже профиль для лимита.
+    delay(StrategyAutopilot.jitter(900))
     val other = probeVerdict(addr, 443, benign, passive, timeoutMs)
     val ownText = describeVerdict(own)
     val otherText = describeVerdict(other)

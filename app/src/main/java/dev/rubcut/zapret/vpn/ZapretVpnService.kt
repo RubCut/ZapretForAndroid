@@ -108,6 +108,22 @@ class ZapretVpnService : VpnService() {
         /** Живой экземпляр сервиса — нужен UI для проверки DNS через защищённые сокеты. */
         @Volatile
         var instance: ZapretVpnService? = null
+
+        /**
+         * Маршруты IPv6: всё, кроме fe80::/10 (link-local) и fc00::/7 (ULA).
+         * Проверены так же, как IPv4-набор: границы дыр + 500k случайных.
+         */
+        val IPV6_ROUTES: List<Pair<String, Int>> = listOf(
+            "::" to 1,
+            "8000::" to 2,
+            "c000::" to 3,
+            "e000::" to 4,
+            "f000::" to 5,
+            "f800::" to 6,
+            "fe00::" to 9,
+            "fec0::" to 10,
+            "ff00::" to 8
+        )
     }
 
     @Volatile
@@ -115,6 +131,7 @@ class ZapretVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
     private var input: FileInputStream? = null
+    private var output: FileOutputStream? = null
     private var tcpStack: TcpStack? = null
     private var udpStack: UdpStack? = null
     private var dnsHandler: DnsHandler? = null
@@ -122,6 +139,11 @@ class ZapretVpnService : VpnService() {
     private var readerThread: Thread? = null
     private var configJob: Job? = null
     private var notifJob: Job? = null
+    // Вотчдоги живут в скоупе СЕРВИСА, а не в глобальном AppGraph.scope:
+    // раньше каждый restart() добавлял новую пару 5с/25с-таймеров, а старые
+    // переживали teardown() и могли перезаписать конфиг уже нового туннеля.
+    private var watchdogJob: Job? = null
+    private var selfHealJob: Job? = null
     private var tunnelSignature: String = ""
 
     val protector = object : SocketProtector {
@@ -179,6 +201,21 @@ class ZapretVpnService : VpnService() {
         LogManager.i(LogTag.VPN, "Изоляция upstream-сокетов: привязка к физической сети=$bound, protect=$prot")
         if (!bound && !prot) {
             LogManager.w("Upstream-сокеты НЕ изолированы от туннеля — возможен самозахват трафика")
+        }
+    }
+
+    /** Персистентное «туннель должен быть поднят» — различает stopSelf и kill. */
+    private fun wantTunnel(): Boolean =
+        try {
+            getSharedPreferences("tunnel", MODE_PRIVATE).getBoolean("want", false)
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun setWantTunnel(v: Boolean) {
+        try {
+            getSharedPreferences("tunnel", MODE_PRIVATE).edit().putBoolean("want", v).apply()
+        } catch (_: Exception) {
         }
     }
 
@@ -245,11 +282,33 @@ class ZapretVpnService : VpnService() {
                 if (running) {
                     stopEverything("по запросу пользователя")
                 } else {
+                    userStopped = false
                     startVpn()
                 }
                 return START_STICKY
             }
-            else -> startVpn()
+            // START_STICKY-пересоздание с null-intent после stopSelf() или после
+            // убийства процесса системой. Различаем их персистентным флагом
+            // wantTunnel: stopEverything()/fail() его снимают, establish()
+            // ставит. Без этого stopEverything() приводил к самопроизвольному
+            // подъёму туннеля, а простой отказ от рестарта ломал бы
+            // восстановление после LMK-kill.
+            else -> {
+                if (intent == null) {
+                    val cfg = AppGraph.config.current
+                    if (wantTunnel() && tunnelRequired(cfg) && VpnService.prepare(this) == null) {
+                        startVpn()
+                    } else {
+                        setWantTunnel(false)
+                        VpnController.markStopped()
+                        return START_NOT_STICKY
+                    }
+                } else {
+                    setWantTunnel(false)
+                    userStopped = false
+                    startVpn()
+                }
+            }
         }
         return START_STICKY
     }
@@ -273,7 +332,15 @@ class ZapretVpnService : VpnService() {
                             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
                             TrafficStats.reset()
                             ReverseHostCache.clear()
-                            establish(AppGraph.config.current)
+                            val rcfg = AppGraph.config.current
+                            val rcap = computeMtuCap(rcfg)
+                            withContext(Dispatchers.Main) {
+                                try {
+                                    establish(rcfg, rcap)
+                                } catch (e: Exception) {
+                                    fail(e.message ?: "reconnect failed")
+                                }
+                            }
                         } else {
                             LogManager.w("Разрешение на VPN отозвано — автопереподключение невозможно")
                             stopEverything("отозван системой")
@@ -305,9 +372,11 @@ class ZapretVpnService : VpnService() {
      *
      * Исключить сети напрямую нельзя: `addExcludedRoute` есть только в новых
      * API и отсутствует в SDK сборки. Поэтому 0.0.0.0/0 заменяется набором
-     * из 34 маршрутов, покрывающих всё, кроме трёх дыр: 192.168/16,
-     * 172.16/12 и 169.254/16. Разбиение проверено полным перебором границ
-     * дыр и случайной выборкой — ни одного промаха.
+     * маршрутов, покрывающих всё, кроме пяти дыр: 127/8 (loopback — на части
+     * прошивок иначе заворачивается в туннель), 192.168/16, 172.16/12,
+     * 169.254/16 и 100.64/10 (CGNAT мобильных операторов — без выреза
+     * десятки миллионов адресов уходили в туннель вместо прямого маршрута).
+     * Разбиение проверено полным перебором границ дыр и случайной выборкой.
      *
      * Сеть 10/8 намеренно НЕ исключается: собственные адреса туннеля лежат
      * именно в ней ([VPN_ADDR_V4] = 10.211.0.1).
@@ -317,19 +386,51 @@ class ZapretVpnService : VpnService() {
         // вызовом самого API компилятор сыплет каскадом «Cannot infer type»,
         // и настоящая причина теряется в шуме.
         val nets: List<Pair<String, Int>> = listOf(
-            "0.0.0.0" to 1,
-            "128.0.0.0" to 3, "160.0.0.0" to 5, "168.0.0.0" to 8,
-            "169.0.0.0" to 9, "169.128.0.0" to 10, "169.192.0.0" to 11,
-            "169.224.0.0" to 12, "169.240.0.0" to 13, "169.248.0.0" to 14,
-            "169.252.0.0" to 15, "169.255.0.0" to 16,
-            "170.0.0.0" to 7, "172.0.0.0" to 12, "172.32.0.0" to 11,
-            "172.64.0.0" to 10, "172.128.0.0" to 9,
-            "173.0.0.0" to 8, "174.0.0.0" to 7, "176.0.0.0" to 4,
-            "224.0.0.0" to 3, "208.0.0.0" to 4, "200.0.0.0" to 5,
-            "196.0.0.0" to 6, "194.0.0.0" to 7, "193.0.0.0" to 8,
-            "192.0.0.0" to 9, "192.192.0.0" to 10, "192.128.0.0" to 11,
-            "192.176.0.0" to 12, "192.160.0.0" to 13,
-            "192.172.0.0" to 14, "192.170.0.0" to 15, "192.169.0.0" to 16
+            "0.0.0.0" to 2,
+            "64.0.0.0" to 3,
+            "96.0.0.0" to 6,
+            "100.0.0.0" to 10,
+            "100.128.0.0" to 9,
+            "101.0.0.0" to 8,
+            "102.0.0.0" to 7,
+            "104.0.0.0" to 5,
+            "112.0.0.0" to 5,
+            "120.0.0.0" to 6,
+            "124.0.0.0" to 7,
+            "126.0.0.0" to 8,
+            "128.0.0.0" to 3,
+            "160.0.0.0" to 5,
+            "168.0.0.0" to 8,
+            "169.0.0.0" to 9,
+            "169.128.0.0" to 10,
+            "169.192.0.0" to 11,
+            "169.224.0.0" to 12,
+            "169.240.0.0" to 13,
+            "169.248.0.0" to 14,
+            "169.252.0.0" to 15,
+            "169.255.0.0" to 16,
+            "170.0.0.0" to 7,
+            "172.0.0.0" to 12,
+            "172.32.0.0" to 11,
+            "172.64.0.0" to 10,
+            "172.128.0.0" to 9,
+            "173.0.0.0" to 8,
+            "174.0.0.0" to 7,
+            "176.0.0.0" to 4,
+            "192.0.0.0" to 9,
+            "192.128.0.0" to 11,
+            "192.160.0.0" to 13,
+            "192.169.0.0" to 16,
+            "192.170.0.0" to 15,
+            "192.172.0.0" to 14,
+            "192.176.0.0" to 12,
+            "192.192.0.0" to 10,
+            "193.0.0.0" to 8,
+            "194.0.0.0" to 7,
+            "196.0.0.0" to 6,
+            "200.0.0.0" to 5,
+            "208.0.0.0" to 4,
+            "224.0.0.0" to 3
         )
         var ok = 0
         for (net in nets) {
@@ -386,7 +487,12 @@ class ZapretVpnService : VpnService() {
                 return@launch
             }
             try {
-                withContext(Dispatchers.Main) { establish(cfg) }
+                // computeMtuCap ходит в binder (allNetworks/LinkProperties) —
+                // считается на IO-потоке, establish() уже на Main только
+                // дёргает Builder. Раньше всё было на Main (ANR на медленном
+                // binder).
+                val cap = computeMtuCap(cfg)
+                withContext(Dispatchers.Main) { establish(cfg, cap) }
             } catch (e: Exception) {
                 fail(e.message ?: e.javaClass.simpleName)
             }
@@ -416,7 +522,7 @@ class ZapretVpnService : VpnService() {
         return if (c.mtu > cap) c.copy(mtu = cap) else c
     }
 
-    private fun establish(requested: AppConfig) {
+    private fun establish(requested: AppConfig, mtuCapPrecomputed: Int) {
         // Защита от любого пути, который мог бы поднять туннель «в выключенном»
         // состоянии: перезапуск, автопереподключение после отзыва и т.п.
         if (!tunnelRequired(requested)) {
@@ -424,7 +530,7 @@ class ZapretVpnService : VpnService() {
             stopEverything("профиль выключен")
             return
         }
-        mtuCap = computeMtuCap(requested)
+        mtuCap = mtuCapPrecomputed.coerceIn(576, 10000)
         val cfg = if (requested.mtu > mtuCap) requested.copy(mtu = mtuCap) else requested
         if (cfg.mtu != requested.mtu) {
             LogManager.i(LogTag.VPN, "MTU понижен ${requested.mtu} → ${cfg.mtu} под физическую сеть")
@@ -465,7 +571,23 @@ class ZapretVpnService : VpnService() {
             if (physicalHasIpv6()) {
                 try {
                     builder.addAddress(VPN_ADDR_V6, 128)
-                    builder.addRoute("::", 0)
+                    // ::/0 целиком нельзя: ULA (fd00::/7, там же наш
+                    // виртуальный DNS) и link-local уходили бы в туннель.
+                    // Набор ниже покрывает всё, кроме fe80::/10 и fc00::/7
+                    // (проверен перебором границ + случайной выборкой), а наш
+                    // виртуальный DNS добивается точечным /128 — longest match.
+                    for (net in IPV6_ROUTES) {
+                        try {
+                            builder.addRoute(net.first, net.second)
+                        } catch (e: Exception) {
+                            LogManager.w("Не удалось добавить маршрут ${net.first}/${net.second}: ${e.message}")
+                        }
+                    }
+                    try {
+                        builder.addRoute(DNS_ADDR_V6, 128)
+                    } catch (e: Exception) {
+                        LogManager.w("Не удалось добавить маршрут виртуального DNSv6: ${e.message}")
+                    }
                     builder.addDnsServer(DNS_ADDR_V6)
                     hasV6 = true
                 } catch (e: Exception) {
@@ -497,8 +619,9 @@ class ZapretVpnService : VpnService() {
         val fd = builder.establish() ?: throw IllegalStateException("establish() вернул null")
         pfd = fd
         input = FileInputStream(fd.fileDescriptor)
-        val output = FileOutputStream(fd.fileDescriptor)
-        val writer = PacketWriter(output)
+        val out = FileOutputStream(fd.fileDescriptor)
+        output = out
+        val writer = PacketWriter(out)
 
         val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -538,6 +661,7 @@ class ZapretVpnService : VpnService() {
         running = true
         reconnectAttempts = 0
         userStopped = false
+        setWantTunnel(true)
         instance = this
         VpnController.markRunning()
 
@@ -781,7 +905,8 @@ class ZapretVpnService : VpnService() {
             }
             LogManager.w("Цикл чтения tun завершён: прочитано ${readCount.get()}, обработано ${handledCount.get()}")
         }, "zapret-tun-reader")
-        thread.priority = Thread.NORM_PRIORITY + 2
+        // +1 вместо +2: reader +2 вместе с воркерами +1 душили UI под нагрузкой.
+        thread.priority = Thread.NORM_PRIORITY + 1
         readerThread = thread
         thread.start()
     }
@@ -793,7 +918,10 @@ class ZapretVpnService : VpnService() {
      */
     private fun startTrafficWatchdog() {
         val before = readCount.get()
-        AppGraph.scope.launch {
+        watchdogJob?.cancel()
+        // Скоуп сервиса, не AppGraph.scope: переживший teardown() вотчдог
+        // накапливался при каждом restart() и шумел в чужом туннеле.
+        watchdogJob = (scope ?: AppGraph.scope).launch {
             delay(5000)
             if (!running) return@launch
             val now = readCount.get()
@@ -819,9 +947,14 @@ class ZapretVpnService : VpnService() {
      * сам и применяет победителя — без участия пользователя.
      */
     private fun startSelfHeal() {
-        AppGraph.scope.launch {
+        selfHealJob?.cancel()
+        // Скоуп сервиса + привязка к сигнатуре: старый selfHeal не должен
+        // переписывать конфиг уже нового туннеля после restart().
+        val mySignature = tunnelSignature
+        selfHealJob = (scope ?: AppGraph.scope).launch {
             delay(25_000)
             if (!running) return@launch
+            if (mySignature != tunnelSignature) return@launch
             val stack = tcpStack ?: return@launch
             val read = readCount.get()
             val ok = stack.establishedTotal.get()
@@ -882,6 +1015,9 @@ class ZapretVpnService : VpnService() {
             for ((host, named) in perHost) {
                 LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «${named.first}» — применяю")
             }
+            // Туннель могли перезапустить, пока шёл подбор: чужую сигнатуру
+            // не трогаем, иначе selfHeal старого туннеля перепишет конфиг нового.
+            if (!running || mySignature != tunnelSignature) return@launch
             try {
                 AppGraph.config.update { it.withTunedPerHost(perHost, base.tcpPorts) }
             } catch (e: Exception) {
@@ -949,6 +1085,12 @@ class ZapretVpnService : VpnService() {
                         restart()
                     }
                 } else {
+                    // pickDnsRedirect считался раз при establish() и протухал
+                    // при смене сети/DNS: обновляем живьём без перезапуска.
+                    try {
+                        tcpStack?.dnsRedirect = pickDnsRedirect(cfg)
+                    } catch (_: Exception) {
+                    }
                     updateNotification()
                 }
             }
@@ -956,8 +1098,17 @@ class ZapretVpnService : VpnService() {
     }
 
     private fun signature(cfg: AppConfig): String =
-        listOf(cfg.mtu, cfg.ipv4, cfg.ipv6, cfg.appScope, cfg.appPackages.sorted().joinToString(","), cfg.profile)
-            .joinToString("|")
+        listOf(
+            cfg.mtu, cfg.ipv4, cfg.ipv6, cfg.appScope,
+            cfg.appPackages.sorted().joinToString(","),
+            cfg.profile,
+            // Конечная точка DNS и UDP-политика требуют пересоздания стека:
+            // резолвер и dnsRedirect привязаны к establish(). Таймауты и
+            // буферы живые (читаются на каждое новое соединение), их смена
+            // перезапуска не требует.
+            cfg.dnsMode, cfg.dohUrl, cfg.dotHost, cfg.dnsServers, cfg.dnsHijack,
+            cfg.udpMode, cfg.blockQuic
+        ).joinToString("|")
 
     /** Туннель нужен только при включённом профиле и хотя бы одной семье IP. */
     private fun tunnelRequired(cfg: AppConfig): Boolean =
@@ -969,6 +1120,8 @@ class ZapretVpnService : VpnService() {
         AppGraph.scope.launch {
             delay(200)
             val cfg = AppGraph.config.current
+            // MTU-кап считается до прыжка на Main (binder вне UI-потока).
+            val cap = computeMtuCap(cfg)
             withContext(Dispatchers.Main) {
                 if (!tunnelRequired(cfg)) {
                     stopEverything("профиль выключен")
@@ -978,7 +1131,7 @@ class ZapretVpnService : VpnService() {
                     scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
                     TrafficStats.reset()
                     ReverseHostCache.clear()
-                    establish(cfg)
+                    establish(cfg, cap)
                 } catch (e: Exception) {
                     fail(e.message ?: "restart failed")
                 }
@@ -1002,6 +1155,7 @@ class ZapretVpnService : VpnService() {
 
     private fun stopEverything(reason: String) {
         if (reason == "по запросу пользователя") userStopped = true
+        setWantTunnel(false)
         if (!running && pfd == null && scope == null) {
             VpnController.markStopped()
             return
@@ -1027,6 +1181,7 @@ class ZapretVpnService : VpnService() {
         LogManager.e("Туннель не поднят: $message")
         VpnController.markError(message)
         running = false
+        setWantTunnel(false)
         teardown()
         TrafficStats.stopped()
         try {
@@ -1100,6 +1255,8 @@ class ZapretVpnService : VpnService() {
         unwatchUnderlyingNetwork()
         configJob?.cancel(); configJob = null
         notifJob?.cancel(); notifJob = null
+        watchdogJob?.cancel(); watchdogJob = null
+        selfHealJob?.cancel(); selfHealJob = null
         try { readerThread?.interrupt() } catch (_: Exception) {}
         readerThread = null
         try { tcpStack?.shutdown() } catch (_: Exception) {}
@@ -1110,6 +1267,10 @@ class ZapretVpnService : VpnService() {
         dnsHandler = null
         try { input?.close() } catch (_: Exception) {}
         input = null
+        // output раньше не хранился и не закрывался: течь обёртки стрима
+        // на каждый establish()/restart().
+        try { output?.close() } catch (_: Exception) {}
+        output = null
         try { pfd?.close() } catch (_: Exception) {}
         pfd = null
         try { scope?.cancel() } catch (_: Exception) {}
@@ -1135,7 +1296,8 @@ class ZapretVpnService : VpnService() {
         val events = NotificationChannel(
             CHANNEL_EVENTS,
             getString(R.string.notif_channel_logs),
-            NotificationManager.IMPORTANCE_DEFAULT
+            // Был DEFAULT: каждая тихая остановка/ошибка орала со звуком.
+            NotificationManager.IMPORTANCE_LOW
         )
         runCatching { nm.createNotificationChannel(main) }
         runCatching { nm.createNotificationChannel(events) }

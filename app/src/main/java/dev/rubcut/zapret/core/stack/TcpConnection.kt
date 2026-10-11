@@ -21,14 +21,14 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.security.SecureRandom
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.min
-import kotlin.random.Random
 
 /**
  * Одно TCP-соединение внутри туннеля.
@@ -82,7 +82,9 @@ class TcpConnection(
     private val lock = Any()
 
     private val clientIsn: Int = syn.seq
-    private val ourIsn: Int = Random.nextInt()
+    // Предсказуемый ISN внутреннего стека: kotlin.random.Random не годится
+    // даже здесь — берём общий SecureRandom.
+    private val ourIsn: Int = secureIsn.nextInt()
 
     // Читаются из потока насоса, пишутся из потока чтения tun — без volatile
     // компилятор вправе закэшировать значения и отправить клиенту сегмент
@@ -98,30 +100,42 @@ class TcpConnection(
     private var queueTailSeq: Int = sndNxt
 
     private val clientUsesTimestamps = syn.hasTimestamp
+    @Volatile
     private var clientTsVal: Int = syn.tsValue
     private val ourWscale = 7
     private val clientWscale = if (syn.wscale in 0..14) syn.wscale else 0
+    // Пишется reader-тредом (onSegment/handleAck), читается насосом и
+    // вотчдогом: без volatile насос слал бы сегменты со старым окном.
+    @Volatile
     private var clientWindow = 65535
     private val mss: Int
 
     private val unacked = ArrayDeque<Chunk>()
     private var queue = ArrayDeque<Chunk>()
     private var inflight = 0
+    // Читается насосом вне lock (backpressure), пишется под lock.
+    @Volatile
     private var queuedBytes = 0
     private var dupAcks = 0
     private var rtoMs = 800L
     private var retransmits = 0
     private var lastProgress = SystemClock.elapsedRealtime()
+    // Пишется reader-тредом, читается вотчдогом на IO — volatile обязателен.
+    @Volatile
     private var lastActivity = SystemClock.elapsedRealtime()
 
     private var finFromUpstream = false
     private var finSent = false
     private var finAcked = false
+    // Пишется reader-тредом (handleClientFin), читается вотчдогом.
+    @Volatile
     private var finFromClient = false
 
     private val inbound = Channel<ByteArray?>(Channel.UNLIMITED)
     private var upstream: Socket? = null
-    private var jobs = mutableListOf<Job>()
+    // Пишется из start() (reader-тред), итерируется в close() (любой тред):
+    // обычный MutableList давал ConcurrentModificationException.
+    private val jobs = Collections.synchronizedList(mutableListOf<Job>())
 
     private val inboundBytes = AtomicInteger(0)
 
@@ -169,10 +183,12 @@ class TcpConnection(
     init {
         // Наш виртуальный DNS в сети не существует, поэтому любой TCP к нему
         // (в том числе отправленный системным резолвером) уходит в настоящий
-        // DNS-сервер. Для чужих хостов на порту 53 перенаправление тоже
-        // безвредно — так мы перехватываем DNS поверх TCP целиком.
+        // DNS-сервер. Для чужих хостов на порту 53 перенаправление действует
+        // только при включённом dnsHijack — зеркально UDP-стороне в DnsHandler:
+        // раньше TCP/53 хайджечился всегда, и выключенный перехват всё равно
+        // уводил чужой DNS на наш резолвер.
         upstreamAddr =
-            if (serverPort == 53 || stack.isVirtualDns(serverAddr)) {
+            if (stack.isVirtualDns(serverAddr) || (serverPort == 53 && cfg.dnsHijack)) {
                 stack.dnsRedirectTarget() ?: serverAddr
             } else {
                 serverAddr
@@ -192,7 +208,11 @@ class TcpConnection(
     fun start() {
         TrafficStats.connectionOpened()
         sendSynAck()
-        connectStrategy = stack.resolveFor(serverPort, ReverseHostCache.get(serverAddr), serverAddr, clientPort).strategy
+        val resolved = stack.resolveFor(serverPort, ReverseHostCache.get(serverAddr), serverAddr, clientPort).strategy
+        // Порт 53 — это DNS-over-TCP, а не обходимый трафик: OOB/disorder
+        // вставили бы срочный байт или перестановку в DNS-поток и повредили
+        // его. Приёмы здесь запрещены — чистая ретрансляция.
+        connectStrategy = if (serverPort == 53) Strategy.OFF else resolved
         val scope = stack.scope
         jobs += scope.launch(stack.io) { runConnection() }
         jobs += scope.launch(stack.io) { watchdog() }
@@ -235,7 +255,11 @@ class TcpConnection(
 
     private suspend fun openUpstream(): Socket {
         val socket = Socket()
-        stack.protector.protect(socket)
+        // Fail-closed: неизолированный сокет петляет в собственный TUN.
+        if (!stack.protector.protect(socket)) {
+            try { socket.close() } catch (_: Exception) {}
+            throw java.io.IOException("upstream TCP-сокет не изолирован от туннеля")
+        }
         socket.tcpNoDelay = true
         socket.keepAlive = false
         val s = connectStrategy
@@ -251,9 +275,9 @@ class TcpConnection(
             } catch (_: Exception) {
             }
         }
-        withContext(stack.io) {
-            socket.connect(InetSocketAddress(upstreamAddr, serverPort), cfg.connectTimeoutMs.coerceIn(1000, 60000))
-        }
+        // Блок уже идёт на stack.io: вложенный withContext занимал второй
+        // поток пула на тот же connect (см. UdpStack — тот же дефект).
+        socket.connect(InetSocketAddress(upstreamAddr, serverPort), cfg.connectTimeoutMs.coerceIn(1000, 60000))
         return socket
     }
 
@@ -597,13 +621,12 @@ class TcpConnection(
             }
             if (closed) break
 
-            val n: Int = withContext(stack.io) {
-                try {
-                    input.read(buf)
-                } catch (e: Exception) {
-                    if (!closed) LogManager.d(LogTag.TCP, "read↓ $description: ${e.message}")
-                    Int.MIN_VALUE
-                }
+            // Чтение уже на stack.io — без вложенного withContext (см. openUpstream).
+            val n: Int = try {
+                input.read(buf)
+            } catch (e: Exception) {
+                if (!closed) LogManager.d(LogTag.TCP, "read↓ $description: ${e.message}")
+                Int.MIN_VALUE
             }
             if (n == Int.MIN_VALUE) break
             if (n < 0) {
@@ -749,6 +772,9 @@ class TcpConnection(
         lastActivity = SystemClock.elapsedRealtime()
         if (seg.hasTimestamp) clientTsVal = seg.tsValue
 
+        // В TUN приходят только пакеты приложений, поэтому RST считаем
+        // доверенным и закрываемся без проверки seq (оф-пат инъекция в tun
+        // невозможна без компрометации устройства — там уже всё равно).
         if (seg.isRst) {
             close()
             return
@@ -762,8 +788,11 @@ class TcpConnection(
                     clientWindow = scaleWindow(seg.window)
                 } else return
             }
+            // Дублированный SYN в ESTABLISHED — это ретрансмит клиента, а не
+            // новое рукопожатие: отвечаем чистым ACK. Второй SYN-ACK со старым
+            // ISN рассинхронизировал бы клиента.
             else -> {
-                if (seg.isSyn) { sendSynAck(); return }
+                if (seg.isSyn) { sendAck(); return }
             }
         }
 
@@ -883,7 +912,9 @@ class TcpConnection(
     private suspend fun watchdog() {
         val idleLimit = cfg.tcpTimeoutSec.coerceIn(30, 7200) * 1000L
         while (stack.scope.isActive && !closed) {
-            delay(500)
+            // 1000 вместо 500: при сотне соединений каждые 500 мс давали 200+
+            // пробуждений/с вхолостую. RTO снизу ограничен 800 мс — точности хватает.
+            delay(1000)
             val now = SystemClock.elapsedRealtime()
             if (now - lastActivity > idleLimit) {
                 LogManager.d(LogTag.TCP, "таймаут простоя $description")
@@ -927,9 +958,15 @@ class TcpConnection(
         if (closed) return
         closed = true
         state = State.CLOSED
+        // Парный вызов к connectionOpened() из start(): раньше счётчик
+        // активных соединений только рос, и уведомление врало.
+        TrafficStats.connectionClosed()
         try { upstream?.close() } catch (_: Exception) {}
         inbound.close()
-        for (j in jobs) {
+        // Снимок под монитором synchronizedList: итерация по живому списку
+        // из другого треда давала ConcurrentModificationException.
+        val snapshot: List<Job> = synchronized(jobs) { jobs.toList() }
+        for (j in snapshot) {
             try { j.cancel() } catch (_: Exception) {}
         }
         synchronized(lock) { queue.clear(); unacked.clear(); inflight = 0; queuedBytes = 0 }
@@ -942,6 +979,8 @@ class TcpConnection(
 
     private companion object {
         const val WINDOW_FIELD = 65535
+        /** Общий SecureRandom для ISN (см. ourIsn): пара на соединение не нужна. */
+        private val secureIsn = SecureRandom()
         /**
          * TTL гибнущей копии для `--disorder` — буквально как в ByeDPI
          * (`setttl(sfd, 1)`): пакет умирает на первом хопе, DPI его видит,

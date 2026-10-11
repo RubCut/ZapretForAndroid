@@ -20,7 +20,6 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -163,6 +162,7 @@ class UdpStack(
         var lastSeen: Long = System.currentTimeMillis()
             private set
 
+        @Volatile
         private var socket: DatagramSocket? = null
         private var job: Job? = null
         @Volatile
@@ -174,6 +174,10 @@ class UdpStack(
          * запроса: ответ не приходил никогда и запрос отваливался по таймауту.
          */
         private val pending = ArrayDeque<ByteArray>()
+        // Отдельный монитор очереди: synchronized(this) внутри launch-лямбды
+        // лочил бы CoroutineScope (общий для всех сессий), а в sendUpstream —
+        // сессию. Флашить и добавлять шли под разными замками, ArrayDeque рвался.
+        private val pendingLock = Any()
 
         fun touch() { lastSeen = System.currentTimeMillis() }
 
@@ -182,13 +186,18 @@ class UdpStack(
                 var sock: DatagramSocket? = null
                 try {
                     sock = DatagramSocket(null)
-                    protector.protect(sock)
+                    // Fail-closed: неизолированный сокет петляет в собственный
+                    // TUN. Молча продолжать с warn нельзя — рвём сессию явно.
+                    if (!protector.protect(sock)) {
+                        try { sock.close() } catch (_: Exception) {}
+                        throw java.io.IOException("upstream UDP-сокет не изолирован от туннеля")
+                    }
                     // Не нулевой: нулевой таймаут означает блокировку навсегда,
                     // а нам нужно периодически отпускать поток пула (см. ниже).
                     sock.soTimeout = UDP_RECV_TIMEOUT_MS
                     sock.connect(InetSocketAddress(key.dst, key.dstPort))
                     socket = sock
-                    val queued = synchronized(this) {
+                    val queued = synchronized(pendingLock) {
                         val l = pending.toList()
                         pending.clear()
                         l
@@ -210,16 +219,17 @@ class UdpStack(
                     val buf = ByteArray(64 * 1024)
                     while (scope.isActive && !closed) {
                         val packet = DatagramPacket(buf, buf.size)
-                        val got = withContext(io) {
-                            try {
-                                sock.receive(packet)
-                                true
-                            } catch (e: java.net.SocketTimeoutException) {
-                                false
-                            } catch (e: Exception) {
-                                LogManager.d(LogTag.UDP, "UDP receive ${key.dst}:${key.dstPort}: ${e.message}")
-                                true
-                            }
+                        // Блок уже идёт на stack.io: вложенный withContext(io)
+                        // занимал второй поток пула на то же чтение, вдвое
+                        // резал ёмкость и вёл к переполнению с CallerRuns.
+                        val got = try {
+                            sock.receive(packet)
+                            true
+                        } catch (e: java.net.SocketTimeoutException) {
+                            false
+                        } catch (e: Exception) {
+                            LogManager.d(LogTag.UDP, "UDP receive ${key.dst}:${key.dstPort}: ${e.message}")
+                            true
                         }
                         if (closed) break
                         // Не таймаут, а приход данных.
@@ -260,7 +270,7 @@ class UdpStack(
         fun sendUpstream(data: ByteArray) {
             val sock = socket
             if (sock == null) {
-                synchronized(this) {
+                synchronized(pendingLock) {
                     if (pending.size < MAX_PENDING) {
                         pending.addLast(data)
                     } else {
@@ -283,6 +293,9 @@ class UdpStack(
             closed = true
             try { socket?.close() } catch (_: Exception) {}
             try { job?.cancel() } catch (_: Exception) {}
+            // Мёртвые сессии вычищаем из карты сразу: раньше close() оставлял
+            // запись до срабатывания сторожевого таймера, и activeCount врал.
+            sessions.remove(key, this)
         }
     }
 
@@ -291,9 +304,9 @@ class UdpStack(
         const val MAX_PENDING = 8
 
         /** Сколько ждём очередную датаграмму, прежде чем отпустить поток пула. */
-        const val UDP_RECV_TIMEOUT_MS = 1000
+        const val UDP_RECV_TIMEOUT_MS = 2000
 
         /** Пауза после таймаута: coroutine suspension, а не занятый поток. */
-        const val UDP_IDLE_SLEEP_MS = 50L
+        const val UDP_IDLE_SLEEP_MS = 200L
     }
 }

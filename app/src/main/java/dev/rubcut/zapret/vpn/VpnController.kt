@@ -22,6 +22,9 @@ object VpnController {
 
     val isRunning: Boolean get() = _state.value == VpnState.RUNNING
 
+    /** Поднимается или уже поднят: повторный start вместо stop запрещён. */
+    val isActive: Boolean get() = _state.value == VpnState.RUNNING || _state.value == VpnState.STARTING
+
     fun markStarting() {
         _state.value = VpnState.STARTING
         _error.value = null
@@ -55,10 +58,24 @@ object VpnController {
     fun startNow(context: Context) {
         markStarting()
         val intent = Intent(context, ZapretVpnService::class.java).setAction(ZapretVpnService.ACTION_START)
-        ContextCompat.startForegroundService(context, intent)
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (e: Exception) {
+            // Android 12+: старт FGS из фона бросает
+            // ForegroundServiceStartNotAllowedException — раньше это был
+            // молчаливый незапуск с зависшим STARTING.
+            markError(e.message ?: e.javaClass.simpleName)
+        }
     }
 
     fun stop(context: Context) {
+        // Сервис мёртв и не стартует — не создаём процесс ради остановки.
+        // Раньше startService(ACTION_STOP) поднимал сервис только чтобы тут
+        // же вызвать stopSelf().
+        if (ZapretVpnService.instance == null && _state.value != VpnState.STARTING) {
+            markStopped()
+            return
+        }
         val intent = Intent(context, ZapretVpnService::class.java).setAction(ZapretVpnService.ACTION_STOP)
         try {
             context.startService(intent)
@@ -78,7 +95,9 @@ object VpnController {
     }
 
     fun toggle(context: Context): Boolean {
-        if (isRunning) {
+        // Во время STARTING повторный start давал двойной
+        // startForegroundService — гасим старт вместо нового запуска.
+        if (isActive) {
             stop(context)
             return true
         }

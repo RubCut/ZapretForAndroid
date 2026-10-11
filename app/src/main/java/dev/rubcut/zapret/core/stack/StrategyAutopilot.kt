@@ -372,7 +372,10 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 val extSoFar = ext.toByteArray()
                 val bodyFixed = 67 + extSoFar.size          // версия+random+id+suites+compression
                 val wantBody = CHROME_HELLO_SIZE - 9
-                val need = wantBody - bodyFixed
+                // Минус 4: само расширение padding занимает [тип 2][длина 2],
+                // и без этого вычета hello выходил на 4 байта длиннее цели
+                // (521 вместо 517) — поймал тест размера.
+                val need = wantBody - bodyFixed - 4
                 val extOut = ByteArrayOutputStream(extSoFar.size + 4 + (if (need > 0) need else 0))
                 extOut.write(extSoFar)
                 if (need > 0) {

@@ -114,12 +114,18 @@ fun HomeScreen(
     // Тика здесь больше нет: секундный тик жил в теле HomeScreen и
     // рекомпозировал ВЕСЬ экран каждую секунду + два IPC в UI-потоке.
     // Аптайм тикает внутри StatsGrid, права — в ChecklistStates (30 с, IO).
-    val perms by checklistPermissions(state)
+    val perms = checklistPermissions(state)
 
     val running = state == VpnState.RUNNING
     val starting = state == VpnState.STARTING
 
     fun power() {
+        // Во время STARTING повторный старт давал двойной
+        // startForegroundService — гасим старт вместо нового запуска.
+        if (starting) {
+            vm.stopTunnel(context)
+            return
+        }
         if (running) {
             vm.stopTunnel(context)
             return

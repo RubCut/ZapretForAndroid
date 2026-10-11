@@ -36,6 +36,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -111,8 +112,11 @@ fun ProfilesScreen(vm: AppViewModel) {
                     icon = Icons.Rounded.Bolt,
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                 ) {
+                    // Мемоизация: генерация строки на каждую рекомпозицию ни к
+                    // чему, конфиг здесь же собран в cfg выше по дереву.
+                    val args = remember(cfg) { vm.generatedArgs() }
                     Text(
-                        vm.generatedArgs(),
+                        args,
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

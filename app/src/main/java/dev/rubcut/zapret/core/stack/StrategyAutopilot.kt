@@ -546,29 +546,59 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 LogManager.i(LogTag.DPI, "Разведка $host → ${recon.first} · ${recon.second}")
                 onProgress("$host: разведка → ${recon.first}")
             }
-            outer@ for (addr in addrs) {
-                val suffix = if (addrs.size > 1) " [${addr.hostAddress}]" else ""
-                for ((index, candidate) in CANDIDATES.withIndex()) {
-                    val (name, strategy) = candidate
-                    onProgress("$host · ${index + 1}/$total · $name$suffix")
-                    LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name$suffix")
-                    val ok = probe(addr, 443, host, strategy, perHostTimeoutMs)
+            // Кандидаты идут ВНЕШНИМ циклом, адреса — внутренним. Порядок принципиален:
+            // следующий адрес имеет смысл пробовать, только если текущий МЁРТВ
+            // (сервер не ответил даже на SYN). Если адрес отвечает, значит он
+            // живой, и блокирует его SNI — второй IP того же провайдера даст
+            // тот же отказ, только потратив ещё 4 секунды на зонд.
+            //
+            // Раньше было наоборот (сначала адреса), из-за чего каждый из 21
+            // приёма прогонялся на всех трёх адресах — 63 проверки вместо 21, и
+            // подбор занимал минуты втрое дольше нужного.
+            var winner: Pair<String, Strategy>? = null
+            for ((index, candidate) in CANDIDATES.withIndex()) {
+                val (name, strategy) = candidate
+                if (index > 0) onProgress("$host · ${index + 1}/$total · $name")
+                LogManager.d(LogTag.DPI, "Автоподбор: $host, ${index + 1}/$total · $name")
+                for (addr in addrs) {
+                    val suffix = if (addrs.size > 1) " [${addr.hostAddress}]" else ""
+                    val verdict = probeVerdict(addr, 443, host, strategy, perHostTimeoutMs)
+                    val ok = verdict == Verdict.HELLO
                     // Вердикт по КАЖДОМУ кандидату, а не только по победителю:
                     // без него нельзя показать в списке, кто не сработал, и
                     // сравнить приёмы между собой.
                     val key = name.substringBefore(" [")
                     val prev = onCandidate(key, strategy, ok)
                     if (ok) {
-                        // Кандидат сработал хотя бы на одном адресе — помечаем
-                        // его рабочим навсегда в этом прогоне.
+                        // Кандидат сработал — помечаем его рабочим в этом прогоне.
                         if (prev != true) onCandidate(key, strategy, true)
-                        out[host] = "$name$suffix" to strategy
+                        winner = "$name$suffix" to strategy
                         onProgress("$host: подошло «$name»$suffix")
                         LogManager.i(LogTag.DPI, "Автоподбор: $host → подошло «$name»$suffix")
-                        break@outer
+                        break
                     }
+                    // Меняем адрес, только если он недоказуемо недоступен: не ответил
+                    // даже на SYN (NO_SYNACK) либо зонд не успел за общий
+                    // таймаут (TIMEOUT) — это может быть именно этот адрес.
+                    //
+                    // На SILENCE / ALERT / RESET / GARBAGE адрес ЖИВ: сервер
+                    // отвечает, и блокирует его SNI. Второй IP того же
+                    // провайдера даст тот же отказ, потратив ещё 4 секунды.
+                    if (verdict != Verdict.NO_SYNACK && verdict != Verdict.TIMEOUT) {
+                        LogManager.d(
+                            LogTag.DPI,
+                            "автоподбор: ${addr.hostAddress} отвечает (${verdict}), следующий IP не пробую"
+                        )
+                        break
+                    }
+                    LogManager.d(
+                        LogTag.DPI,
+                        "автоподбор: ${addr.hostAddress} недоступен (${verdict}), пробую следующий адрес"
+                    )
                 }
+                if (winner != null) break
             }
+            winner?.let { (name, strategy) -> out[host] = name to strategy }
             if (!out.containsKey(host)) {
                 onProgress("$host: ни один кандидат не подошёл")
                 LogManager.w("DPI: автоподбор: для $host не подошёл ни один кандидат")

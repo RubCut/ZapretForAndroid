@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -409,8 +410,11 @@ private fun AppIcon(pkg: String) {
             .background(MaterialTheme.colorScheme.surfaceContainerHighest),
         contentAlignment = Alignment.Center
     ) {
-        if (bitmap != null) {
-            Image(bitmap = bitmap, contentDescription = null, modifier = Modifier.size(40.dp))
+        // Локальная копия: bitmap — делегированный var, smart cast на нём
+        // невозможен (значение может смениться между проверкой и чтением).
+        val b = bitmap
+        if (b != null) {
+            Image(bitmap = b, contentDescription = null, modifier = Modifier.size(40.dp))
         } else {
             Icon(
                 Icons.Rounded.Apps, contentDescription = null,

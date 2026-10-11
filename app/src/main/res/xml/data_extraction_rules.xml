@@ -3,11 +3,13 @@
     <cloud-backup>
         <include domain="sharedpref" path="." />
         <include domain="file" path="lists/" />
-        <include domain="datastore" path="." />
+        <!-- DataStore с AppConfig лежит в files/datastore (отдельного домена
+             datastore в схеме нет — только file/database/sharedpref/...). -->
+        <include domain="file" path="datastore/" />
     </cloud-backup>
     <device-transfer>
         <include domain="sharedpref" path="." />
         <include domain="file" path="lists/" />
-        <include domain="datastore" path="." />
+        <include domain="file" path="datastore/" />
     </device-transfer>
 </data-extraction-rules>

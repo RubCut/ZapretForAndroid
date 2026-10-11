@@ -49,7 +49,11 @@ class HostMatcher private constructor(
                 if (comment >= 0) line = line.substring(0, comment).trim()
                 if (line.isEmpty()) continue
                 val exactOnly = line.startsWith("*")
-                if (exactOnly) line = line.trimStart('*').trim()
+                // `*.example.com` → точное "example.com": trimStart('*') даёт
+                // ".example.com" с ведущей точкой, и такое правило не матчило
+                // НИЧЕГО (ни голый домен, ни поддомены) — мёртвое правило без
+                // единого сообщения. Точку снимаем здесь же.
+                if (exactOnly) line = line.trimStart('*').trim().trimStart('.')
                 line = line.lowercase().trimEnd('.')
                 if (line.isEmpty()) continue
                 if (exactOnly) exacts += line else suffixes += line

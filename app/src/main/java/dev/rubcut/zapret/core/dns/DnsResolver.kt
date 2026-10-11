@@ -552,6 +552,11 @@ class DnsResolver(
             addrs.isNotEmpty() && addrs.all { a -> a.address.all { it == 0.toByte() } }
     }
 
+    /** Диалект DoH-конца: wire понимают все, JSON — не все. */
+    private enum class WireMode { UNKNOWN, WIRE, JSON_ONLY }
+
+    private data class DohHttpReply(val code: Int, val headers: Map<String, String>)
+
     /* ---------------------------------------------------------------- */
     /*  DNS-over-HTTPS (JSON API)                                        */
     /* ---------------------------------------------------------------- */
@@ -573,7 +578,6 @@ class DnsResolver(
          */
         private var wireMode: WireMode = WireMode.UNKNOWN
 
-        private enum class WireMode { UNKNOWN, WIRE, JSON_ONLY }
 
         init {
             var u = url.trim()
@@ -684,8 +688,7 @@ class DnsResolver(
             return null
         }
 
-        private fun wireToStrings(body: ByteArray, id: Int): List<String>? = when (val r = parseWireResponse(body, id)) {
-            is DnsWireResult.Addresses -> r.list.mapNotNull { it.hostAddress }
+        private fun wireToStrings(body: ByteArray, id: Int): List<String>? = when (val r = parseWireResponse(body, id)) {            is DnsWireResult.Addresses -> r.list.mapNotNull { it.hostAddress }
             is DnsWireResult.Blocked -> emptyList()
             is DnsWireResult.Failed -> {
                 LogManager.d(LogTag.DNS, "DoH wire: ${r.reason}")
@@ -693,10 +696,8 @@ class DnsResolver(
             }
         }
 
-        private data class HttpReply(val code: Int, val headers: Map<String, String>)
 
-        private fun sendHttp(head: String, body: ByteArray?): HttpReply {
-            val out = output ?: throw IOException("нет канала")
+        private fun sendHttp(head: String, body: ByteArray?): DohHttpReply {            val out = output ?: throw IOException("нет канала")
             val inp = input ?: throw IOException("нет канала")
             out.write(head.toByteArray(Charsets.US_ASCII))
             if (body != null) out.write(body)
@@ -710,7 +711,7 @@ class DnsResolver(
                 val c = line.indexOf(':')
                 if (c > 0) headers[line.substring(0, c).trim().lowercase()] = line.substring(c + 1).trim()
             }
-            return HttpReply(code, headers)
+            return DohHttpReply(code, headers)
         }
 
         /**
@@ -719,7 +720,7 @@ class DnsResolver(
          * @return тело; null — неприменимо к wire (пробуем JSON).
          * @throws IOException транспорт мёртв или framing битый (выше reconnect).
          */
-        private fun readHttpBody(reply: HttpReply): ByteArray? {
+        private fun readHttpBody(reply: DohHttpReply): ByteArray? {
             val inp = input ?: throw IOException("нет канала")
             if (reply.code != 200) {
                 // Не-200 съедать по длине не станем: рвём канал, следующий

@@ -521,6 +521,14 @@ class StrategyAutopilot(private val stack: TcpStack) {
          */
         onCandidate: (host: String, name: String, strategy: Strategy, works: Boolean) -> Boolean? =
             { _, _, _, _ -> null },
+        /**
+         * Хост разобран до конца (победитель найден или кандидаты кончились).
+         *
+         * Нужен, чтобы найденное не терялось, если подбор не дожали до конца:
+         * победитель по хосту сохраняется сразу, а не в самом финале. Иначе
+         * «нашёл стратегию, пошёл проверять дальше, а какая была — не видно».
+         */
+        onHostDone: (host: String, winner: Pair<String, Strategy>?) -> Unit = { _, _ -> },
     ): Map<String, Pair<String, Strategy>> {
         val out = LinkedHashMap<String, Pair<String, Strategy>>()
         val total = CANDIDATES.size
@@ -600,6 +608,9 @@ class StrategyAutopilot(private val stack: TcpStack) {
                 if (winner != null) break
             }
             winner?.let { (name, strategy) -> out[host] = name to strategy }
+            // Сообщаем сразу, не дожидаясь остальных хостов: если подбор
+            // прервётся, найденное уже сохранено вызывающей стороной.
+            onHostDone(host, out[host])
             if (!out.containsKey(host)) {
                 onProgress("$host: ни один кандидат не подошёл")
                 LogManager.w("DPI: автоподбор: для $host не подошёл ни один кандидат")

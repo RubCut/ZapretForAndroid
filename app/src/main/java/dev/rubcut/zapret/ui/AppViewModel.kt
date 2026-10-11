@@ -32,6 +32,7 @@ import dev.rubcut.zapret.data.ThemeMode
 import dev.rubcut.zapret.data.Presets
 import dev.rubcut.zapret.data.ProbeStatus
 import dev.rubcut.zapret.data.ProfileId
+import dev.rubcut.zapret.data.Strategy
 import dev.rubcut.zapret.data.StrategyRule
 import dev.rubcut.zapret.core.dns.DnsResult
 import dev.rubcut.zapret.core.dns.DnsType
@@ -334,6 +335,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Вложенность «хост → приём» обязательна: один и тот же приём на
                 // YouTube работает, а на Discord — нет.
                 val seen = HashMap<String, HashMap<String, Boolean>>()
+                // Найденные победители копятся отдельно: их применяем сразу по
+                // мере нахождения, чтобы не потерять, если подбор прервётся.
+                val foundSoFar = LinkedHashMap<String, Pair<String, Strategy>>()
                 // По одному кандидату на хост: хосты блокируются по-разному, и
                 // общий кандидат либо не подходит никому, либо ломает тех, кто
                 // и так работает.
@@ -357,6 +361,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                         merged
+                    },
+                    onHostDone = { host, winner ->
+                        // Победитель применяется СРАЗУ, а не в конце всего
+                        // подбора: иначе «нашёл стратегию, пошёл проверять
+                        // дальше» — и какая была, уже не видно, а при обрыве
+                        // она теряется вовсе.
+                        if (winner != null) {
+                            foundSoFar[host] = winner
+                            update { cfg ->
+                                cfg.withTunedPerHost(foundSoFar, current.tcpPorts)
+                            }
+                            snackbar.value = "Найдено для $host: ${winner.first}"
+                        }
+                        persistCandidateStatus(seen)
                     },
                 )
                 val winner = perHost.values.firstOrNull()?.second

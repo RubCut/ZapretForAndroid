@@ -108,15 +108,17 @@ data class Strategy(
             val d = Strategy()
             if (o == null) return d
             val pos = o.optJSONArray("splitPositions")
+            // Нет ключа — дефолт; ключ есть, но пуст — уважаем явное «без точек».
             val posList = if (pos == null) d.splitPositions else {
                 val l = ArrayList<SplitPos>()
                 for (i in 0 until pos.length()) SplitPos.fromToken(pos.optString(i))?.let { l += it }
-                l.distinct().ifEmpty { d.splitPositions }
+                l.distinct()
             }
             return d.copy(
                 desync = DesyncMode.fromToken(o.optString("desync", d.desync.token)),
                 splitPositions = posList,
-                urgentByte = if (o.has("urgentByte")) o.getInt("urgentByte") else null,
+                urgentByte = if (o.isNull("urgentByte")) null
+                    else runCatching { o.getInt("urgentByte") }.getOrNull(),
                 fakeTtl = o.optInt("fakeTtl", d.fakeTtl),
                 splitCustomPos = o.optInt("splitCustomPos", d.splitCustomPos),
                 splitDelayMs = o.optInt("splitDelayMs", d.splitDelayMs),
@@ -190,6 +192,10 @@ data class StrategyRule(
     }
 
     /** Строка в стиле zapret для экрана «Аргументы» и для экспорта. */
+    // Пустой фильтр намеренно опускается: по договорённости со
+    // StrategyResolver пустая строка портов означает «правило не действует на
+    // этот протокол», а явный 1-65535 — «действует на всё». Подмена одного
+    // другим включала бы OFF-правила на весь трафик при round-trip.
     fun toZapretLine(): String = buildString {
         if (tcpFilter.toString().isNotEmpty()) append("--filter-tcp=").append(tcpFilter).append(' ')
         if (udpFilter.toString().isNotEmpty()) append("--filter-udp=").append(udpFilter).append(' ')

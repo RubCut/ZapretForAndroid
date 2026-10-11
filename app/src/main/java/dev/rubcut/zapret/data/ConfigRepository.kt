@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import android.util.Log
 import dev.rubcut.zapret.data.DnsMode
 import org.json.JSONObject
 
@@ -36,67 +39,87 @@ class ConfigRepository(private val context: Context, scope: CoroutineScope) {
     @Volatile
     private var cached: AppConfig = factory()
 
+    /** Мьютекс записи: убирает lost update при параллельных `update()` (слайдер + автоподбор). */
+    private val writeMutex = Mutex()
+
+    /**
+     * Сырой JSON последней неудачной расшифровки.
+     *
+     * Битый документ больше не сносит конфиг молча: сырьё сохраняется в памяти
+     * и дописывается в DataStore при следующей успешной записи (ключ
+     * `config_json_corrupt`), чтобы настройки можно было восстановить вручную.
+     */
+    @Volatile
+    var lastCorruptJson: String? = null
+        private set
+
     /** Синхронный снимок — его читают потоки туннеля. */
     val current: AppConfig get() = cached
 
     val config: StateFlow<AppConfig> = context.zapretDataStore.data
         .map { prefs: Preferences -> decode(prefs[CONFIG_KEY]) }
-        .catch { emit(factory()) }
         .onEach { cached = it }
+        // Ошибка чтения диска (а не битого JSON) отдаёт последний известный
+        // конфиг, а не заводской: раньше любой сбой DataStore сбрасывал UI
+        // в COMBINED-пресет и затирал кэш через onEach ниже по цепочке.
+        .catch { emit(cached) }
         .stateIn(scope, SharingStarted.Eagerly, factory())
 
     suspend fun ensureLoaded() {
         val prefs = context.zapretDataStore.data.first()
-        cached = decode(prefs[CONFIG_KEY])
+        writeMutex.withLock { cached = decode(prefs[CONFIG_KEY]) }
     }
 
     suspend fun update(transform: (AppConfig) -> AppConfig) {
-        val next = transform(cached)
-        write(next)
+        writeMutex.withLock { writeLocked(transform(cached)) }
     }
 
-    suspend fun set(value: AppConfig) = write(value)
+    suspend fun set(value: AppConfig) = writeMutex.withLock { writeLocked(value) }
 
     /** Сброс к заводским значениям — это тоже профиль по умолчанию. */
-    suspend fun reset() = write(factory())
+    suspend fun reset() = writeMutex.withLock { writeLocked(factory()) }
 
     fun exportJson(): String = cached.toJson().toString(2)
 
     suspend fun importJson(json: String): Boolean {
         val parsed = runCatching { AppConfig.fromJson(JSONObject(json)) }.getOrNull() ?: return false
-        write(parsed)
+        writeMutex.withLock { writeLocked(parsed) }
         return true
     }
 
-    private suspend fun write(value: AppConfig) {
-        // Версия штампуется при каждой записи: откат назад невозможен.
-        val stamped = value.copy(configVersion = CURRENT_CONFIG_VERSION)
-        context.zapretDataStore.edit { prefs -> prefs[CONFIG_KEY] = stamped.toJson().toString() }
+    private suspend fun writeLocked(value: AppConfig) {
+        // Миграция при каждой записи, а не только при чтении: импорт старого
+        // JSON раньше навсегда застревал на старой схеме, потому что write()
+        // сразу штамповал CURRENT_CONFIG_VERSION поверх устаревших правил.
+        val migrated = migrateConfig(value)
+        val stamped = migrated.copy(configVersion = CURRENT_CONFIG_VERSION)
+        context.zapretDataStore.edit { prefs ->
+            prefs[CONFIG_KEY] = stamped.toJson().toString()
+            // Дописываем бэкап битого документа, если он был (см. decode).
+            lastCorruptJson?.let { corrupt ->
+                if (corrupt.length <= MAX_CORRUPT_BACKUP) prefs[CORRUPT_KEY] = corrupt
+                lastCorruptJson = null
+            }
+        }
         cached = stamped
     }
 
     private fun decode(raw: String?): AppConfig {
         if (raw.isNullOrBlank()) return factory()
-        val parsed = runCatching { AppConfig.fromJson(JSONObject(raw)) }.getOrElse { return factory() }
-        return migrate(parsed)
+        val parsed = runCatching { AppConfig.fromJson(JSONObject(raw)) }.getOrElse { e ->
+            Log.w(TAG, "битый config_json, откат к заводскому с бэкапом", e)
+            lastCorruptJson = raw
+            return factory()
+        }
+        return migrateConfig(parsed)
     }
-
-    /**
-     * Освежение устаревших правил после обновления приложения.
-     *
-     * Обновляются ТОЛЬКО правила не-CUSTOM профилей — и только они: DNS,
-     * порты и прочие настройки пользователя не трогаем. Правила, созданные
-     * автоподбором (`isGenerated`), сохраняются впереди свежих — иначе
-     * обновление стирало бы подобранную стратегию.
-     *
-     * Без этого владельцы старых установок навсегда оставались на правилах
-     * позапрошлой версии (у нас так уже было: профиль говорил tlsrec, а
-     * применялась смена регистра с разрывом по первому байту).
-     */
-    private fun migrate(cfg: AppConfig): AppConfig = migrateConfig(cfg)
 
     private companion object {
         val CONFIG_KEY: Preferences.Key<String> = stringPreferencesKey("config_json")
+        val CORRUPT_KEY: Preferences.Key<String> = stringPreferencesKey("config_json_corrupt")
+        const val TAG = "ConfigRepository"
+        /** Бэкап битого JSON режем, чтобы не раздувать DataStore. */
+        const val MAX_CORRUPT_BACKUP = 100 * 1024
     }
 }
 

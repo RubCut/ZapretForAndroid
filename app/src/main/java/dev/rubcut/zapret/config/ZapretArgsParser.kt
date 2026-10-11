@@ -5,6 +5,7 @@ import dev.rubcut.zapret.data.DesyncMode
 import dev.rubcut.zapret.data.HostSource
 import dev.rubcut.zapret.data.HostlistMode
 import dev.rubcut.zapret.data.IpsetMode
+import dev.rubcut.zapret.data.PortFilter
 import dev.rubcut.zapret.data.ProfileId
 import dev.rubcut.zapret.data.SplitPos
 import dev.rubcut.zapret.data.Strategy
@@ -86,6 +87,15 @@ object ZapretArgsParser {
         "block" to "блокировка пакетов вместо ретрансляции (root)"
     )
 
+    private val BLOCK_KEYS = setOf(
+        "--filter-tcp", "--filter-udp", "--filter-l7",
+        "--hostlist", "--hostlist-exclude", "--hostlist-domains",
+        "--dpi-desync", "--dpi-desync-split-pos", "--dpi-desync-tlsrec",
+        "--dpi-desync-any-protocol", "--dpi-desync-oob", "--dpi-desync-fake-ttl",
+        "--hostcase", "--poison", "--poison-sni", "--poison-delay",
+        "--dpi-desync-cutoff", "--wssize", "--split-delay", "--rule-name"
+    )
+
     fun parse(text: String, base: AppConfig): ParseResult {
         val supported = ArrayList<String>()
         val ignored = ArrayList<String>()
@@ -136,9 +146,14 @@ object ZapretArgsParser {
         var curUrgentByte: Int? = base.urgentByte
         var curFakeTtl = base.fakeTtl
         var ruleName = ""
+        // Блок считается заданным, только если встречен хотя бы один его ключ.
+        // Раньше flush() решал по содержимому (пустые порты + NONE + пустые
+        // домены = «блока нет») и молча ронял валидное пассивное правило
+        // OFF+ANY, а также блоки из одного --split-delay/--wssize.
+        var curTouched = false
 
         fun flush() {
-            if (curTcp.isBlank() && curUdp.isBlank() && curDesync == DesyncMode.NONE && curDomains.isBlank()) return
+            if (!curTouched) return
             val strategy = Strategy(
                 desync = curDesync,
                 splitPositions = curPositions.distinct().ifEmpty { listOf(SplitPos.MIDSNI) },
@@ -169,12 +184,24 @@ object ZapretArgsParser {
             curHostSource = HostSource.ANY
             curDesync = DesyncMode.NONE
             curPositions = ArrayList()
+            // Наследование через --new запрещено для всех пер-блочных полей:
+            // раньше delay/tlsrec/wssize/urgent/fake/customPos текли в следующее
+            // правило, и второе правило неожиданно получало приёмы первого.
+            curCustomPos = base.splitCustomPos
+            curDelay = base.splitDelayMs
+            curTlsrec = base.tlsrecParts
+            curWssizeOn = base.wssizeEnabled
+            curWssizePackets = base.wssizePackets
+            curWssizeWindow = base.wssizeWindow
+            curUrgentByte = base.urgentByte
+            curFakeTtl = base.fakeTtl
             curAnyProto = base.anyProtocol
             curCaseMix = base.sniCaseMix
             curPoison = base.poisonEnabled
             curPoisonSni = base.poisonSni
             curPoisonDelay = base.poisonDelayMs
             ruleName = ""
+            curTouched = false
         }
 
         var i = 0
@@ -183,14 +210,38 @@ object ZapretArgsParser {
             val (key, inlineValue) = splitKeyValue(raw)
             val value: String? = inlineValue ?: tokens.getOrNull(i + 1)?.takeIf { !it.startsWith("--") }?.also { i++ }
             val k = key.lowercase()
+            // Любой блочный ключ означает «блок задан», даже если его значение
+            // пустое/пассивное (OFF+ANY). Глобальные --wf-*/--ipset сюда не
+            // входят: они не принадлежат текущему блоку.
+            if (k in BLOCK_KEYS) curTouched = true
 
             when {
                 k == "--new" -> flush()
 
-                k == "--wf-tcp" -> { globalTcp = value.orEmpty(); supported += "--wf-tcp=$globalTcp (общий фильтр TCP)" }
-                k == "--wf-udp" -> { globalUdp = value.orEmpty(); supported += "--wf-udp=$globalUdp (общий фильтр UDP)" }
-                k == "--filter-tcp" -> { curTcp = value.orEmpty(); supported += "--filter-tcp=$curTcp" }
-                k == "--filter-udp" -> { curUdp = value.orEmpty(); supported += "--filter-udp=$curUdp" }
+                k == "--wf-tcp" -> {
+                    globalTcp = value.orEmpty()
+                    val bad = PortFilter.parseWithErrors(globalTcp).second
+                    if (bad.isNotEmpty()) errors += "--wf-tcp: отброшены токены ${bad.joinToString(",")}"
+                    supported += "--wf-tcp=$globalTcp (общий фильтр TCP)"
+                }
+                k == "--wf-udp" -> {
+                    val (_, bad) = PortFilter.parseWithErrors(value.orEmpty())
+                    globalUdp = value.orEmpty()
+                    if (bad.isNotEmpty()) errors += "--wf-udp: отброшены токены ${bad.joinToString(",")}"
+                    supported += "--wf-udp=$globalUdp (общий фильтр UDP)"
+                }
+                k == "--filter-tcp" -> {
+                    curTcp = value.orEmpty()
+                    val bad = PortFilter.parseWithErrors(curTcp).second
+                    if (bad.isNotEmpty()) errors += "--filter-tcp: отброшены токены ${bad.joinToString(",")}"
+                    supported += "--filter-tcp=$curTcp"
+                }
+                k == "--filter-udp" -> {
+                    curUdp = value.orEmpty()
+                    val bad = PortFilter.parseWithErrors(curUdp).second
+                    if (bad.isNotEmpty()) errors += "--filter-udp: отброшены токены ${bad.joinToString(",")}"
+                    supported += "--filter-udp=$curUdp"
+                }
                 k == "--filter-l7" -> ignored += "--filter-l7=$value (определение протокола по содержимому UDP не переносится без root)"
 
                 k == "--hostlist" -> {
@@ -332,7 +383,9 @@ object ZapretArgsParser {
             globalUdpPorts = globalUdp,
             hostlistMode = hostlistMode,
             ipsetMode = ipsetMode,
-            defaultStrategy = if (rules.isEmpty()) null else rules.last().strategy,
+            // Глобальная стратегия — из ПЕРВОГО правила: именно оно срабатывает
+            // первым в StrategyResolver. rules.last() брал хвост цепочки.
+            defaultStrategy = if (rules.isEmpty()) null else rules.first().strategy,
             cutoffChunks = cutoff,
             anyProtocol = anyProtocol,
             sniCaseMix = sniCaseMix,
@@ -460,6 +513,9 @@ object ZapretArgsParser {
         append("# Общий фильтр (как --wf-* в winws)\n")
         append("--wf-tcp=").append(cfg.tcpPorts.ifBlank { "1-65535" }).append('\n')
         append("--wf-udp=").append(cfg.udpPorts.ifBlank { "*" }).append('\n')
+        // cutoffChunks — глобальный лимит обрабатываемых блоков клиента
+        // (TcpConnection); раньше generate() его терял, и «Аргументы» врали.
+        if (cfg.cutoffChunks != 1) append("--dpi-desync-cutoff=n").append(cfg.cutoffChunks).append('\n')
         when (cfg.hostlistMode) {
             HostlistMode.OFF -> Unit
             HostlistMode.INCLUDE -> append("--hostlist=\"%LISTS%list-general.txt\"\n")

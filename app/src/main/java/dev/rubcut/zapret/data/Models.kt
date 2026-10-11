@@ -215,23 +215,44 @@ class PortFilter private constructor(private val ranges: List<IntRange>) {
     companion object {
         val ANY = PortFilter(emptyList())
 
-        fun parse(spec: String?): PortFilter {
+        fun parse(spec: String?): PortFilter = parseWithErrors(spec).first
+
+        /**
+         * Строгий разбор с отчётом: второй элемент — отброшенные токены.
+         *
+         * Пустая спецификация — это «все порты» по договорённости (см.
+         * [dev.rubcut.zapret.core.desync.StrategyResolver]: пустой фильтр
+         * правила означает «правило не действует на протокол»). А вот
+         * НЕПУСТАЯ строка, из которой не извлеклось ни одного порта
+         * («443a,zzz»), раньше молча превращалась в ANY и начинала матчить
+         * весь трафик — теперь такие токены возвращаются в отчёте, чтобы UI
+         * и импорт могли показать ошибку вместо тихого расширения охвата.
+         */
+        fun parseWithErrors(spec: String?): Pair<PortFilter, List<String>> {
             val s = spec?.trim().orEmpty()
-            if (s.isEmpty() || s == "*" || s == "0") return ANY
+            if (s.isEmpty() || s == "*" || s == "0") return ANY to emptyList()
             val ranges = ArrayList<IntRange>()
+            val dropped = ArrayList<String>()
             for (raw in s.split(',', ';', ' ').filter { it.isNotBlank() }) {
                 val token = raw.trim()
                 val dash = token.indexOf('-')
-                if (dash > 0) {
-                    val a = token.substring(0, dash).toIntOrNull() ?: continue
-                    val b = token.substring(dash + 1).toIntOrNull() ?: continue
-                    if (a in 1..65535 && b in 1..65535) ranges += (minOf(a, b)..maxOf(a, b))
+                val ok = if (dash > 0) {
+                    val a = token.substring(0, dash).toIntOrNull()
+                    val b = token.substring(dash + 1).toIntOrNull()
+                    if (a != null && b != null && a in 1..65535 && b in 1..65535) {
+                        ranges += (minOf(a, b)..maxOf(a, b))
+                        true
+                    } else false
                 } else {
-                    val v = token.toIntOrNull() ?: continue
-                    if (v in 1..65535) ranges += (v..v)
+                    val v = token.toIntOrNull()
+                    if (v != null && v in 1..65535) {
+                        ranges += (v..v)
+                        true
+                    } else false
                 }
+                if (!ok) dropped += token
             }
-            return if (ranges.isEmpty()) ANY else PortFilter(ranges)
+            return (if (ranges.isEmpty()) ANY else PortFilter(ranges)) to dropped
         }
     }
 }
@@ -451,10 +472,12 @@ data class AppConfig(
                 autoStart = o.optBoolean("autoStart", d.autoStart),
 
                 desync = DesyncMode.fromToken(o.optString("desync", d.desync.token)),
-                splitPositions = readStringSet(o.optJSONArray("splitPositions"))
-                    .mapNotNull { SplitPos.fromToken(it) }
-                    .distinct()
-                    .ifEmpty { d.splitPositions },
+                // Отсутствует ключ — дефолт; присутствует, но пуст/невалиден —
+                // уважаем явный выбор «без точек» (движок вернёт giveUp, а не
+                // скрытый MIDSNI). Раньше [] превращалось обратно в [MIDSNI].
+                splitPositions = o.optJSONArray("splitPositions")?.let { arr ->
+                    readStringSet(arr).mapNotNull { SplitPos.fromToken(it) }.distinct()
+                } ?: d.splitPositions,
                 splitCustomPos = o.optInt("splitCustomPos", d.splitCustomPos),
                 splitDelayMs = o.optInt("splitDelayMs", d.splitDelayMs),
                 cutoffChunks = o.optInt("cutoffChunks", d.cutoffChunks),
@@ -467,7 +490,10 @@ data class AppConfig(
                 poisonEnabled = o.optBoolean("poisonEnabled", d.poisonEnabled),
                 poisonSni = o.optString("poisonSni", d.poisonSni),
                 poisonDelayMs = o.optInt("poisonDelayMs", d.poisonDelayMs),
-                urgentByte = if (o.has("urgentByte")) o.getInt("urgentByte") else null,
+                // getInt бросал JSONException на строковом значении и ронял
+                // весь документ в заводской; opt-вариант терпит чужой тип.
+                urgentByte = if (o.isNull("urgentByte")) null
+                    else runCatching { o.getInt("urgentByte") }.getOrNull(),
                 fakeTtl = o.optInt("fakeTtl", d.fakeTtl),
 
                 tcpPorts = o.optString("tcpPorts", d.tcpPorts),

@@ -527,11 +527,8 @@ class ZapretVpnService : VpnService() {
      * реального MTU канала. На мобильных сетях это классическая «чёрная дыра»:
      * рукопожатие проходит, а данные не идут.
      */
-    private fun tunnelConfig(): AppConfig {
-        val c = AppGraph.config.current
-        val cap = mtuCap
-        return if (c.mtu > cap) c.copy(mtu = cap) else c
-    }
+    private fun tunnelConfig(): AppConfig =
+        effectiveMtuConfig(AppGraph.config.current, mtuCap)
 
     private fun establish(requested: AppConfig, mtuCapPrecomputed: Int) {
         // Защита от любого пути, который мог бы поднять туннель «в выключенном»
@@ -542,7 +539,7 @@ class ZapretVpnService : VpnService() {
             return
         }
         mtuCap = mtuCapPrecomputed.coerceIn(576, 10000)
-        val cfg = if (requested.mtu > mtuCap) requested.copy(mtu = mtuCap) else requested
+        val cfg = effectiveMtuConfig(requested, mtuCap)
         if (cfg.mtu != requested.mtu) {
             LogManager.i(LogTag.VPN, "MTU понижен ${requested.mtu} → ${cfg.mtu} под физическую сеть")
         }
@@ -668,7 +665,7 @@ class ZapretVpnService : VpnService() {
         tcpStack = tcp
         udpStack = udp
 
-        tunnelSignature = signature(cfg)
+        tunnelSignature = tunnelSignatureOf(cfg)
         running = true
         reconnectAttempts = 0
         userStopped = false
@@ -1082,7 +1079,11 @@ class ZapretVpnService : VpnService() {
             var lastSignature = tunnelSignature
             AppGraph.config.config.collect { cfg ->
                 LogManager.verbose = cfg.verboseLog
-                val sig = signature(cfg)
+                // Отпечаток считается от того же «ужатого» конфига, что и при
+                // подъёме (establish): сигнатуру от ужатого MTU нельзя
+                // сравнивать с сырым конфигом из репозитория — иначе мнимые
+                // «изменения» перезапускали туннель каждые ~350 мс.
+                val sig = tunnelSignatureOf(effectiveMtuConfig(cfg, mtuCap))
                 if (sig != lastSignature) {
                     lastSignature = sig
                     if (!tunnelRequired(cfg)) {
@@ -1107,19 +1108,6 @@ class ZapretVpnService : VpnService() {
             }
         }
     }
-
-    private fun signature(cfg: AppConfig): String =
-        listOf(
-            cfg.mtu, cfg.ipv4, cfg.ipv6, cfg.appScope,
-            cfg.appPackages.sorted().joinToString(","),
-            cfg.profile,
-            // Конечная точка DNS и UDP-политика требуют пересоздания стека:
-            // резолвер и dnsRedirect привязаны к establish(). Таймауты и
-            // буферы живые (читаются на каждое новое соединение), их смена
-            // перезапуска не требует.
-            cfg.dnsMode, cfg.dohUrl, cfg.dotHost, cfg.dnsServers, cfg.dnsHijack,
-            cfg.udpMode, cfg.blockQuic
-        ).joinToString("|")
 
     /** Туннель нужен только при включённом профиле и хотя бы одной семье IP. */
     private fun tunnelRequired(cfg: AppConfig): Boolean =

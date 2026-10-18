@@ -345,9 +345,12 @@ class DnsResolver(
             var socket: DatagramSocket? = null
             try {
                 socket = DatagramSocket()
-                if (!protector.protect(socket)) {
-                    throw IOException("DNS-сокет не изолирован от туннеля")
-                }
+                // Мягкая изоляция — как в TCP/UDP-релее и каналах DoH/DoT.
+                // Жёсткий throw был последним местом, где spuriously false от
+                // protect() уносил весь обычный DNS (SYSTEM/CUSTOM и резерв):
+                // резолвер не мог разрешить даже имя проверяемого хоста, и
+                // автоподбор сообщал «имя не разрешилось, пропускаю».
+                ensureIsolated(protector.protect(socket), "DNS-сокет")
                 socket.soTimeout = 3500
                 socket.connect(InetSocketAddress(s.address, s.port))
                 socket.send(DatagramPacket(query, query.size))
@@ -688,7 +691,8 @@ class DnsResolver(
             return null
         }
 
-        private fun wireToStrings(body: ByteArray, id: Int): List<String>? = when (val r = parseWireResponse(body, id)) {            is DnsWireResult.Addresses -> r.list.mapNotNull { it.hostAddress }
+        private fun wireToStrings(body: ByteArray, id: Int): List<String>? = when (val r = parseWireResponse(body, id)) {
+            is DnsWireResult.Addresses -> r.list.mapNotNull { it.hostAddress }
             is DnsWireResult.Blocked -> emptyList()
             is DnsWireResult.Failed -> {
                 LogManager.d(LogTag.DNS, "DoH wire: ${r.reason}")
@@ -697,7 +701,8 @@ class DnsResolver(
         }
 
 
-        private fun sendHttp(head: String, body: ByteArray?): DohHttpReply {            val out = output ?: throw IOException("нет канала")
+        private fun sendHttp(head: String, body: ByteArray?): DohHttpReply {
+            val out = output ?: throw IOException("нет канала")
             val inp = input ?: throw IOException("нет канала")
             out.write(head.toByteArray(Charsets.US_ASCII))
             if (body != null) out.write(body)

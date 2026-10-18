@@ -140,6 +140,8 @@
     <string name="strategy_group_udp">UDP и QUIC</string>
     <string name="strategy_block_quic">Блокировать QUIC (UDP/443)</string>
     <string name="strategy_block_quic_hint">Браузеры уходят в QUIC, где обход без root невозможен. Блокировка заставляет их вернуться на TCP/443, где работает split. Google Meet и YouTube загружаются чуть медленнее в первые секунды.</string>
+    <string name="strategy_fake_udp">Приманки UDP: QUIC и голос Discord</string>
+    <string name="strategy_fake_udp_hint">Перед первым QUIC Initial уходит подставной Initial с безобидным SNI (www.google.com), у голосовых портов Discord — своя приманка: фильтр относит поток к разрешённым и не мешает ему. Работает без root — заголовки подделывать не нужно, приманка уходит с того же сокета. Включать вместо блокировки QUIC.</string>
     <string name="strategy_udp_mode">Обработка UDP</string>
     <string name="udp_mode_relay">Релей (пропускать всё)</string>
     <string name="udp_mode_block_filtered">Блокировать только фильтруемые порты</string>

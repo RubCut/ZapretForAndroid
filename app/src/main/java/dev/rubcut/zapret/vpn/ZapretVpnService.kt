@@ -35,6 +35,7 @@ import dev.rubcut.zapret.core.dns.DnsResult
 import dev.rubcut.zapret.core.dns.DnsType
 import dev.rubcut.zapret.core.stack.StrategyAutopilot
 import dev.rubcut.zapret.core.stack.TcpStack
+import dev.rubcut.zapret.core.stack.UdpFakes
 import dev.rubcut.zapret.core.stack.UdpStack
 import dev.rubcut.zapret.data.AppConfig
 import dev.rubcut.zapret.data.AppScope
@@ -530,6 +531,24 @@ class ZapretVpnService : VpnService() {
     private fun tunnelConfig(): AppConfig =
         effectiveMtuConfig(AppGraph.config.current, mtuCap)
 
+    /**
+     * Шаблоны UDP-приманок из assets (записанные QUIC Initial с безобидным
+     * SNI). Если файл недоступен, соответствующий вид приманки просто
+     * выключается — на релей это не влияет.
+     */
+    private fun loadUdpFakes(): UdpFakes {
+        fun read(name: String): ByteArray? = try {
+            assets.open(name).use { it.readBytes() }
+        } catch (e: Exception) {
+            LogManager.w("приманки UDP: шаблон $name недоступен (${e.message})")
+            null
+        }
+        return UdpFakes(
+            quic = read("fakes/quic_initial_www_google_com.bin"),
+            discord = read("fakes/quic_initial_dbankcloud_ru.bin")
+        )
+    }
+
     private fun establish(requested: AppConfig, mtuCapPrecomputed: Int) {
         // Защита от любого пути, который мог бы поднять туннель «в выключенном»
         // состоянии: перезапуск, автопереподключение после отзыва и т.п.
@@ -658,7 +677,8 @@ class ZapretVpnService : VpnService() {
             writer = writer,
             protector = protector,
             configProvider = { tunnelConfig() },
-            listsProvider = { AppGraph.lists.current }
+            listsProvider = { AppGraph.lists.current },
+            udpFakes = loadUdpFakes()
         )
 
         dnsHandler = dns

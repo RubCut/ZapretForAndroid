@@ -535,6 +535,11 @@ object ZapretArgsParser {
                 append(r.toZapretLine()).append('\n')
             }
         }
-        if (cfg.blockQuic) append("\n# --filter-udp=443 с полным дропом: QUIC блокируется, браузеры уходят на TCP\n")
+        if (cfg.fakeUdp) {
+            append("\n# приманки UDP: --dpi-desync=fake --dpi-desync-fake-quic=… --dpi-desync-repeats=11\n")
+            append("# (включены приманки — QUIC не блокируется, потоку разрешено оставаться в QUIC)\n")
+        } else if (cfg.blockQuic) {
+            append("\n# --filter-udp=443 с полным дропом: QUIC блокируется, браузеры уходят на TCP\n")
+        }
     }
 }

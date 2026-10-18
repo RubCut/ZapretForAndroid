@@ -370,6 +370,13 @@ fun StrategyScreen(vm: AppViewModel, navController: NavHostController) {
                         onCheckedChange = { v -> vm.updateStrategy { it.copy(blockQuic = v) } }
                     )
                     Spacer(Modifier.height(8.dp))
+                    SwitchRow(
+                        title = stringResource(R.string.strategy_fake_udp),
+                        subtitle = stringResource(R.string.strategy_fake_udp_hint),
+                        checked = cfg.fakeUdp,
+                        onCheckedChange = { v -> vm.updateStrategy { it.copy(fakeUdp = v) } }
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Text(stringResource(R.string.strategy_udp_mode), style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(8.dp))
                     ChipSelector(

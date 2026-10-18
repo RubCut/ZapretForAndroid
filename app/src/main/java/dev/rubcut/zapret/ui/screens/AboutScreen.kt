@@ -63,6 +63,7 @@ private val capabilityMatrix = listOf(
     Triple("цепочки правил", Capability.YES, "--new"),
     Triple("--wf-tcp / --wf-udp", Capability.YES, "--filter-tcp --filter-udp"),
     Triple("блокировка QUIC", Capability.YES, "--filter-udp=443 с дропом"),
+    Triple("приманки UDP", Capability.YES, "--dpi-desync-fake-quic, fake-discord/stun"),
     Triple("fake (TTL)", Capability.PARTIAL, "только подставным соединением"),
     Triple("disorder / multidisorder", Capability.ROOT, "нужен raw-сокет"),
     Triple("syndata / synack", Capability.ROOT, "нужен raw-сокет"),

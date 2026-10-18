@@ -304,6 +304,15 @@ data class AppConfig(
 
     // UDP / QUIC
     val blockQuic: Boolean = true,
+    /**
+     * Приманки UDP (аналог `--dpi-desync=fake` для UDP в zapret).
+     *
+     * Перед первым QUIC Initial уходит подставной Initial с безобидным SNI,
+     * перед голосовыми портами Discord — своя приманка. Root не нужен:
+     * приманка отправляется с того же сокета, что и поток. Заменяет
+     * блокировку QUIC — потоку разрешено оставаться в QUIC.
+     */
+    val fakeUdp: Boolean = false,
     val udpMode: UdpMode = UdpMode.RELAY,
     val udpTimeoutSec: Int = 60,
 
@@ -422,6 +431,7 @@ data class AppConfig(
         o.put("ipsetMode", ipsetMode.token)
 
         o.put("blockQuic", blockQuic)
+        o.put("fakeUdp", fakeUdp)
         o.put("udpMode", udpMode.token)
         o.put("udpTimeoutSec", udpTimeoutSec)
 
@@ -512,6 +522,7 @@ data class AppConfig(
                 ipsetMode = IpsetMode.fromToken(o.optString("ipsetMode", d.ipsetMode.token)),
 
                 blockQuic = o.optBoolean("blockQuic", d.blockQuic),
+                fakeUdp = o.optBoolean("fakeUdp", d.fakeUdp),
                 udpMode = UdpMode.fromToken(o.optString("udpMode", d.udpMode.token)),
                 udpTimeoutSec = o.optInt("udpTimeoutSec", d.udpTimeoutSec),
 

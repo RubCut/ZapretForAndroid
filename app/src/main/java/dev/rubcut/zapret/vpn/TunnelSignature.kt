@@ -32,5 +32,5 @@ internal fun tunnelSignatureOf(cfg: AppConfig): String =
         cfg.appPackages.sorted().joinToString(","),
         cfg.profile,
         cfg.dnsMode, cfg.dohUrl, cfg.dotHost, cfg.dnsServers, cfg.dnsHijack,
-        cfg.udpMode, cfg.blockQuic
+        cfg.udpMode, cfg.blockQuic, cfg.fakeUdp
     ).joinToString("|")

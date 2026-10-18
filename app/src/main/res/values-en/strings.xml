@@ -135,6 +135,8 @@
     <string name="strategy_group_udp">UDP and QUIC</string>
     <string name="strategy_block_quic">Block QUIC (UDP/443)</string>
     <string name="strategy_block_quic_hint">Browsers escape into QUIC where rootless bypass is impossible. Blocking pushes them back to TCP/443 where split works. Meet and YouTube may load a second slower at first.</string>
+    <string name="strategy_fake_udp">UDP decoys: QUIC and Discord voice</string>
+    <string name="strategy_fake_udp_hint">Before the first QUIC Initial a decoy Initial with a benign SNI (www.google.com) is sent; Discord voice ports get their own decoy — the filter treats the flow as allowed. No root needed: no header forging, the decoy leaves through the same socket. Use instead of QUIC blocking.</string>
     <string name="strategy_udp_mode">UDP handling</string>
     <string name="udp_mode_relay">Relay (pass everything)</string>
     <string name="udp_mode_block_filtered">Block filtered ports only</string>

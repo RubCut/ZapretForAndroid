@@ -38,16 +38,44 @@ data class UdpKey(
 )
 
 /**
+ * Шаблоны-приманки для UDP — аналог `--dpi-desync-fake-quic` и
+ * `--dpi-desync-fake-discord`/`fake-stun` из zapret.
+ *
+ * Приманка — записанный QUIC Initial с безобидным SNI. Провайдерский фильтр
+ * расшифровывает его (ключи выводятся из DCID самого пакета), относит поток
+ * к разрешённым и больше не мешает настоящим пакетам. Приманка уходит с того
+ * же сокета, что и поток, поэтому ни root, ни подмена заголовков не нужны —
+ * в отличие от TCP-приёмов ложного разбиения, где подделывать приходится
+ * sequence-номера.
+ *
+ * Шаблоны взяты из набора zapret (bol-van, GPL-3) — как и сам приём.
+ */
+data class UdpFakes(
+    val quic: ByteArray? = null,
+    val discord: ByteArray? = null
+)
+
+/**
  * Релей UDP. DNS сюда не попадает — его разбирает [dev.rubcut.zapret.core.dns.DnsHandler].
  *
- * QUIC (UDP/443) по умолчанию отбрасывается: без root подделать Initial-пакет нельзя,
- * зато браузер, не дождавшись QUIC, возвращается на TCP/443, где работает split.
+ * QUIC (UDP/443) по умолчанию отбрасывается: браузер, не дождавшись QUIC,
+ * возвращается на TCP/443, где работает split. Если включены приманки
+ * ([UdpFakes]), QUIC вместо блокировки пропускается: перед настоящим Initial
+ * уходит подставной Initial с чужим безобидным SNI, и фильтр относит поток
+ * к разрешённым.
  */
 class UdpStack(
     private val writer: PacketWriter,
     private val protector: SocketProtector,
     private val configProvider: () -> AppConfig,
-    listsProvider: () -> HostListStore.Snapshot
+    listsProvider: () -> HostListStore.Snapshot,
+    private val udpFakes: UdpFakes = UdpFakes(),
+    /**
+     * Порт QUIC (UDP). Наружу всегда 443; параметр существует ради тестов:
+     * привязать локальный сокет к 443 без root нельзя, а проверить, что
+     * приманка уходит перед настоящим пакетом, нужно на живом сокете.
+     */
+    private val quicPort: Int = 443
 ) {
 
     private val threadIndex = AtomicInteger()
@@ -83,18 +111,21 @@ class UdpStack(
         val cfg = configProvider()
         val port = dgram.dstPort
 
-        if (cfg.blockQuic && port == 443 && dgram.payloadLength > 0) {
-            val first = dgram.buffer[dgram.payloadOffset].toInt() and 0xFF
-            // Старший бит — признак long header, то есть QUIC Initial/Handshake.
-            // Именно один этот бит, а не маска 0xC0: провайдеры обфусцируют QUIC,
-            // обнуляя reserved-бит 0x40, и такой Initial тоже обязан
-            // блокироваться — иначе клиент уходит в QUIC, где мы не умеем
-            // десинхронизировать SNI. Short header (1-RTT, бит 0x80 сброшен) —
-            // это уже установленное соединение, его рвать нельзя.
-            if (first and 0x80 != 0) {
-                TrafficStats.quicBlocked()
-                return true
-            }
+        // Старший бит payload'а — признак long header, то есть QUIC
+        // Initial/Handshake. Именно один этот бит, а не маска 0xC0: провайдеры
+        // обфусцируют QUIC, обнуляя reserved-бит 0x40, и такой Initial тоже
+        // обязан распознаваться — иначе клиент уходит в QUIC, где мы не умеем
+        // десинхронизировать SNI. Short header (1-RTT, бит 0x80 сброшен) —
+        // это уже установленное соединение, его рвать нельзя.
+        val quicLongHeader = port == quicPort && dgram.payloadLength > 0 &&
+            (dgram.buffer[dgram.payloadOffset].toInt() and 0x80) != 0
+
+        // С приманками QUIC не блокируем: поток уходит в сеть, приманка
+        // заставляет фильтр считать его разрешённым (см. [UdpFakes]).
+        val quicFakesArmed = cfg.fakeUdp && udpFakes.quic != null
+        if (cfg.blockQuic && quicLongHeader && !quicFakesArmed) {
+            TrafficStats.quicBlocked()
+            return true
         }
 
         when (cfg.udpMode) {
@@ -168,6 +199,9 @@ class UdpStack(
         @Volatile
         private var closed = false
 
+        /** Приманка за сессию положена ровно однажды (см. [sendFakesIfArmed]). */
+        private var fakesSent = false
+
         /**
          * Пакеты, пришедшие до готовности сокета. Раньше первый пакет сессии
          * молча терялся (`socket ?: return`), а для DNS это единственный пакет
@@ -205,6 +239,7 @@ class UdpStack(
                     }
                     for (d in queued) {
                         try {
+                            sendFakesIfArmed(d)
                             sock.send(DatagramPacket(d, d.size))
                             TrafficStats.up(d.size)
                         } catch (e: Exception) {
@@ -268,6 +303,62 @@ class UdpStack(
             }
         }
 
+        /**
+         * Приманка перед первым настоящим пакетом сессии — аналог
+         * `--dpi-desync=fake` для UDP. Для QUIC/443 уходит записанный Initial
+         * с SNI www.google.com, для голосовых портов Discord — Initial
+         * с SNI dbankcloud.ru. Повторы нужны, как в zapret: фильтру может
+         * понадобиться не один пакет, чтобы отнести поток к разрешённым.
+         *
+         * Вызывается строго перед отправкой настоящего пакета; за сессию
+         * срабатывает не более одного раза.
+         */
+        @Synchronized
+        private fun sendFakesIfArmed(data: ByteArray) {
+            if (fakesSent) return
+            if (!configProvider().fakeUdp) return
+            val payload: ByteArray
+            val repeats: Int
+            when {
+                key.dstPort == quicPort -> {
+                    // Приманка уместна перед QUIC Initial: short header — уже
+                    // установленное соединение, туда приманка не лезет.
+                    val first = data.firstOrNull()?.toInt()?.and(0xFF) ?: return
+                    val quic = udpFakes.quic
+                    if (first and 0x80 == 0 || quic == null) {
+                        fakesSent = true
+                        return
+                    }
+                    payload = quic
+                    repeats = QUIC_FAKE_REPEATS
+                }
+                isVoicePort(key.dstPort) -> {
+                    payload = udpFakes.discord ?: return
+                    repeats = VOICE_FAKE_REPEATS
+                }
+                else -> {
+                    fakesSent = true
+                    return
+                }
+            }
+            val sock = socket ?: return
+            // Отмечаем до отправки: если серия оборвалась, повторять её на
+            // каждый следующий пакет не нужно — это лишние килобайты мусора.
+            fakesSent = true
+            repeat(repeats) {
+                try {
+                    sock.send(DatagramPacket(payload, payload.size))
+                } catch (e: Exception) {
+                    LogManager.d(LogTag.UDP, "UDP приманка ${key.dst}:${key.dstPort}: ${e.message}")
+                    return
+                }
+            }
+            LogManager.d(
+                LogTag.UDP,
+                "UDP/${key.dstPort}: приманка ${payload.size} Б ×$repeats перед первым пакетом"
+            )
+        }
+
         fun sendUpstream(data: ByteArray) {
             val sock = socket
             if (sock == null) {
@@ -281,6 +372,7 @@ class UdpStack(
                 return
             }
             try {
+                sendFakesIfArmed(data)
                 sock.send(DatagramPacket(data, data.size))
                 TrafficStats.up(data.size)
             } catch (e: Exception) {
@@ -304,6 +396,10 @@ class UdpStack(
         const val MAX_SESSIONS = 256
         const val MAX_PENDING = 8
 
+        /** `--dpi-desync-repeats=11` и `=6` — как в рабочем zapret-профиле. */
+        const val QUIC_FAKE_REPEATS = 11
+        const val VOICE_FAKE_REPEATS = 6
+
         /** Сколько ждём очередную датаграмму, прежде чем отпустить поток пула. */
         const val UDP_RECV_TIMEOUT_MS = 2000
 
@@ -311,3 +407,7 @@ class UdpStack(
         const val UDP_IDLE_SLEEP_MS = 200L
     }
 }
+
+/** Голосовые/STUN-порты Discord — диапазоны из zapret-профиля. */
+private fun isVoicePort(port: Int): Boolean =
+    port in 19294..19344 || port in 50000..50100 || port in 3478..3482
